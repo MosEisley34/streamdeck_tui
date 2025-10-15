@@ -87,6 +87,12 @@ Launch the TUI with:
 streamdeck-tui
 ```
 
+If you have an older global installation of `streamdeck-tui`, run `make install` (or
+`pip install -e .`) after cloning to ensure the console entry point points at this
+workspace. Alternatively, invoke the module directly with `python -m streamdeck_tui`
+or `make run` so the code in your clone is always used, even if a previous
+installation is still present on the system.
+
 Keyboard shortcuts:
 
 | Key | Action |

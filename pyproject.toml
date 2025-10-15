@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "streamdeck-tui"
-version = "0.1.0"
+version = "0.1.1"
 description = "A TUI-based IPTV player built with Textual"
 readme = "README.md"
 authors = [{name = "Streamdeck TUI"}]
@@ -23,11 +23,6 @@ streamdeck-tui = "streamdeck_tui.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-
-[tool.setuptools.package-data]
-"streamdeck_tui" = [
-    "streamdeck.css",
-]
 
 [tool.setuptools.packages.find]
 where = ["src"]
