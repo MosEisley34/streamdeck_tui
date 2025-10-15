@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "streamdeck-tui"
+version = "0.1.2"
+description = "A TUI-based IPTV player built with Textual"
+readme = "README.md"
+authors = [{name = "Streamdeck TUI"}]
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.43.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+streamdeck-tui = "streamdeck_tui.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
