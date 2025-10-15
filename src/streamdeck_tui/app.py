@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from importlib import resources
 from pathlib import Path
 
 if __name__ == "__main__" and __package__ is None:
@@ -139,10 +140,73 @@ class StatusBar(Static):
         self.update(status)
 
 
+_DEFAULT_CSS = """Screen {
+    layout: vertical;
+}
+
+#layout {
+    height: 1fr;
+    padding: 1 2;
+    gap: 2;
+}
+
+#providers-pane,
+#channels-pane {
+    height: 1fr;
+    gap: 1;
+}
+
+#providers-pane {
+    width: 2fr;
+}
+
+#channels-pane {
+    width: 4fr;
+}
+
+#provider-list,
+#channel-list {
+    height: 1fr;
+    border: solid $surface 1;
+    padding: 0;
+}
+
+#provider-actions {
+    gap: 1;
+}
+
+ProviderForm {
+    width: 1fr;
+}
+
+#channel-info {
+    border: solid $accent 1;
+    padding: 1;
+    height: auto;
+}
+
+#status {
+    padding: 0 1;
+    height: 3;
+    border-top: solid $surface 1;
+}
+"""
+
+
+def _load_stylesheet() -> str:
+    """Return the stylesheet bundled with the package or a baked-in fallback."""
+
+    try:
+        css_resource = resources.files(__package__).joinpath("streamdeck.css")
+        return css_resource.read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError):
+        return _DEFAULT_CSS
+
+
 class StreamdeckApp(App[None]):
     """Main Textual application."""
 
-    CSS_PATH = str(Path(__file__).with_name("streamdeck.css"))
+    CSS = _load_stylesheet()
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("/", "focus_search", "Search"),
