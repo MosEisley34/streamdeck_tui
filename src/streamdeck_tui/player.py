@@ -8,13 +8,10 @@ from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
 
 from .playlist import Channel
-from .logging_utils import get_logger
 
 
 DEFAULT_PLAYER_CANDIDATES: Sequence[str] = ("mpv", "vlc", "ffplay")
 
-
-log = get_logger(__name__)
 
 @dataclass(slots=True)
 class PlayerCommand:
@@ -32,7 +29,6 @@ def detect_player(preferred: Optional[str] = None, *, candidates: Iterable[str] 
 
     search_order: list[str] = []
     if preferred:
-        log.debug("Preferred player requested: %s", preferred)
         search_order.append(preferred)
     for candidate in candidates:
         if candidate not in search_order:
@@ -40,9 +36,7 @@ def detect_player(preferred: Optional[str] = None, *, candidates: Iterable[str] 
     for executable in search_order:
         path = shutil.which(executable)
         if path:
-            log.info("Selected player executable: %s (from candidate %s)", path, executable)
             return path
-        log.debug("Player candidate %s not found on PATH", executable)
     return None
 
 
@@ -51,11 +45,8 @@ def build_player_command(channel: Channel, *, preferred: Optional[str] = None) -
 
     executable = detect_player(preferred)
     if executable is None:
-        log.error("Unable to locate supported media player")
         raise RuntimeError("No supported media player found (mpv, vlc, ffplay)")
-    command = PlayerCommand(executable=executable, args=[channel.url])
-    log.info("Built player command for channel %s: %s", channel.name, command.as_sequence())
-    return command
+    return PlayerCommand(executable=executable, args=[channel.url])
 
 
 async def launch_player(channel: Channel, *, preferred: Optional[str] = None) -> asyncio.subprocess.Process:
@@ -63,10 +54,7 @@ async def launch_player(channel: Channel, *, preferred: Optional[str] = None) ->
 
     command = build_player_command(channel, preferred=preferred)
     env = os.environ.copy()
-    log.info("Launching player process for %s", channel.name)
-    process = await asyncio.create_subprocess_exec(*command.as_sequence(), env=env)
-    log.debug("Spawned process PID %s", getattr(process, "pid", "unknown"))
-    return process
+    return await asyncio.create_subprocess_exec(*command.as_sequence(), env=env)
 
 
 __all__ = [

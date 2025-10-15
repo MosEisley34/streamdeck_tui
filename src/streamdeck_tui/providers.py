@@ -7,10 +7,6 @@ from dataclasses import dataclass
 from typing import Optional
 from urllib import error, request
 
-from .logging_utils import get_logger
-
-log = get_logger(__name__)
-
 
 @dataclass(slots=True)
 class ConnectionStatus:
@@ -31,21 +27,17 @@ class ConnectionStatus:
 
 
 def _fetch_status(url: str, timeout: float) -> dict[str, object]:
-    log.debug("Fetching provider status from %s (timeout=%s)", url, timeout)
     with request.urlopen(url, timeout=timeout) as response:  # type: ignore[call-arg]
         payload = response.read().decode("utf8")
-    log.debug("Received status payload: %s", payload)
     return json.loads(payload)
 
 
 async def fetch_connection_status(url: str, *, timeout: float = 10.0) -> ConnectionStatus:
     """Fetch connection status JSON from ``url`` asynchronously."""
 
-    log.info("Requesting connection status from %s", url)
     try:
         payload = await asyncio.to_thread(_fetch_status, url, timeout)
     except (error.URLError, json.JSONDecodeError) as exc:  # pragma: no cover - network errors
-        log.error("Failed to fetch status from %s: %s", url, exc)
         raise RuntimeError(str(exc)) from exc
     status = ConnectionStatus()
     if isinstance(payload, dict):
@@ -58,13 +50,6 @@ async def fetch_connection_status(url: str, *, timeout: float = 10.0) -> Connect
         message = payload.get("message")
         if isinstance(message, str):
             status.message = message
-    log.info(
-        "Parsed status from %s: active=%s max=%s message=%s",
-        url,
-        status.active_connections,
-        status.max_connections,
-        status.message,
-    )
     return status
 
 
