@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from importlib import resources
 from pathlib import Path
 
 if __name__ == "__main__" and __package__ is None:
@@ -129,7 +130,7 @@ class ProviderForm(Static):
         self.query_one("#provider-name", Input).focus()
 
 
-DEFAULT_CSS = """
+_INLINE_DEFAULT_CSS = """
 #layout {
     layout: horizontal;
     height: 1fr;
@@ -165,6 +166,20 @@ StatusBar {
     padding: 0 1;
 }
 """
+
+
+def _load_default_css() -> str:
+    """Load the packaged stylesheet, falling back to the inline copy."""
+
+    try:
+        css_path = resources.files(__package__).joinpath("streamdeck.css")
+        return css_path.read_text(encoding="utf-8")
+    except FileNotFoundError:  # pragma: no cover - defensive fallback
+        log.warning("Packaged stylesheet missing; falling back to inline CSS copy")
+        return _INLINE_DEFAULT_CSS
+
+
+DEFAULT_CSS = _load_default_css()
 
 
 class StreamdeckApp(App[None]):

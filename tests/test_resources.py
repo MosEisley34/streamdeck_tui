@@ -13,15 +13,17 @@ from streamdeck_tui.app import StreamdeckApp
 from streamdeck_tui.config import AppConfig
 
 
-def test_app_loads_packaged_stylesheet() -> None:
+def test_app_uses_packaged_stylesheet() -> None:
     """The application should resolve the packaged stylesheet at runtime."""
 
-    assert StreamdeckApp.CSS.strip().startswith("#layout")
+    css_resource = resources.files("streamdeck_tui").joinpath("streamdeck.css")
+    assert css_resource.is_file(), "Expected stylesheet to be packaged with the app"
+    css_text = css_resource.read_text(encoding="utf-8").strip()
+
+    assert css_text.startswith("#layout")
+    assert StreamdeckApp.CSS.strip() == css_text
     assert StreamdeckApp.CSS_PATH == []
-    assert not any(
-        resource.name == "streamdeck.css"
-        for resource in resources.files("streamdeck_tui").iterdir()
-    ), "No external stylesheet should be packaged"
+
     app = StreamdeckApp(AppConfig())
     try:
         assert app.stylesheet is not None
