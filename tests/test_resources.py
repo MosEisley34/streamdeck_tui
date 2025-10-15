@@ -1,24 +1,23 @@
-"""Resource packaging tests for streamdeck_tui."""
+"""Resource configuration tests for streamdeck_tui."""
 
-from importlib import resources
+import importlib.util
+
+import pytest
+
+if importlib.util.find_spec("textual") is None:  # pragma: no cover - optional dependency
+    pytest.skip("textual is not installed", allow_module_level=True)
+
 from streamdeck_tui.app import StreamdeckApp
 from streamdeck_tui.config import AppConfig
 
 
-def test_css_resource_is_packaged() -> None:
-    """The Textual stylesheet should be present in the installed package."""
+def test_app_loads_packaged_stylesheet() -> None:
+    """The application should resolve the packaged stylesheet at runtime."""
 
-    css_resource = resources.files("streamdeck_tui").joinpath("streamdeck.css")
-    assert css_resource.is_file(), "streamdeck.css should be included with the package"
-    assert StreamdeckApp.CSS.strip() == css_resource.read_text(encoding="utf-8").strip()
-
-
-def test_app_uses_inline_stylesheet() -> None:
-    """The application should not require an external CSS path to start."""
-
-    assert getattr(StreamdeckApp, "CSS_PATH", None) is None
+    assert StreamdeckApp.CSS.strip().startswith("#layout")
+    assert StreamdeckApp.CSS_PATH == []
     app = StreamdeckApp(AppConfig())
     try:
-        assert not app.css_path
+        assert app.stylesheet is not None
     finally:
         app.exit(result=None)

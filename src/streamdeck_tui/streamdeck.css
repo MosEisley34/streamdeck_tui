@@ -1,50 +1,40 @@
+/* Basic styling for the Streamdeck TUI layout using Textual-compatible syntax. */
+
 Screen {
     layout: vertical;
 }
 
 #layout {
+    layout: horizontal;
     height: 1fr;
     padding: 1 2;
-    gap: 2;
-}
-
-#providers-pane,
-#channels-pane {
-    height: 1fr;
-    gap: 1;
 }
 
 #providers-pane {
-    width: 2fr;
-}
-
-#channels-pane {
-    width: 4fr;
-}
-
-#provider-list,
-#channel-list {
-    height: 1fr;
-    border: solid $surface 1;
-    padding: 0;
+    layout: vertical;
+    min-width: 30;
+    padding: 1;
 }
 
 #provider-actions {
-    gap: 1;
+    layout: horizontal;
+    padding-top: 1;
 }
 
-ProviderForm {
-    width: 1fr;
+#channels-pane {
+    layout: vertical;
+    height: 1fr;
+    padding: 1;
+}
+
+#channel-list {
+    height: 1fr;
 }
 
 #channel-info {
-    border: solid $accent 1;
     padding: 1;
-    height: auto;
 }
 
-#status {
+StatusBar {
     padding: 0 1;
-    height: 3;
-    border-top: solid $surface 1;
 }

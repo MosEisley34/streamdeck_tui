@@ -102,6 +102,21 @@ Keyboard shortcuts:
 Provider changes are written to disk immediately, and selecting a provider triggers background tasks that fetch its playlist and
 optional status API without blocking the interface. Channels appear in the right pane with metadata and instantaneous filtering.
 
+## Collecting logs
+
+Streamdeck TUI enables detailed logging by default so you can capture diagnostics while testing playlists and provider APIs.
+Runtime messages are written both to stderr and to `~/.cache/streamdeck_tui.log` unless you override the location. Tweak the
+verbosity and log destination with environment variables:
+
+```bash
+export STREAMDECK_TUI_LOG_LEVEL=DEBUG        # emit verbose diagnostics (INFO by default)
+export STREAMDECK_TUI_LOG_FILE=/tmp/tui.log  # choose a custom log file path
+```
+
+Set the variables before running `streamdeck-tui` (or before using `make run`) to persist the configuration for your shell
+session. Attach the resulting log output when reporting issues so errors surfaced by Textual, playlist downloads, or provider
+status checks can be inspected quickly.
+
 ## Development
 
 Run the tests with:

@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 from urllib import request
 
+from .logging_utils import get_logger
+
+log = get_logger(__name__)
+
 
 @dataclass(slots=True)
 class Channel:
@@ -69,7 +73,9 @@ def _parse_extinf(line: str) -> tuple[dict[str, str], str]:
                 i += 1
             if i >= len(metadata):
                 raise PlaylistError("Unterminated attribute value")
-            attributes[current_key] = "".join(buffer)
+            value = "".join(buffer)
+            attributes[current_key] = value
+            log.debug("Parsed attribute %s=%s", current_key, value)
             current_key = None
             i += 1
         elif char == ":":
@@ -113,18 +119,19 @@ def parse_playlist(lines: Iterable[str]) -> List[Channel]:
             continue
         if current_name is None or current_attrs is None:
             raise PlaylistError("Found stream URL without metadata")
-        channels.append(
-            Channel(
-                name=current_name,
-                url=line,
-                group=current_attrs.get("group-title"),
-                logo=current_attrs.get("tvg-logo"),
-                raw_attributes=current_attrs,
-            )
+        channel = Channel(
+            name=current_name,
+            url=line,
+            group=current_attrs.get("group-title"),
+            logo=current_attrs.get("tvg-logo"),
+            raw_attributes=current_attrs,
         )
+        channels.append(channel)
+        log.debug("Added channel %s (%s)", channel.name, channel.url)
         current_attrs = None
         current_name = None
 
+    log.info("Parsed %d channels from playlist", len(channels))
     return channels
 
 
@@ -132,15 +139,19 @@ def load_playlist(source: str | Path) -> List[Channel]:
     """Load and parse a playlist from a local path or URL."""
 
     source_str = str(source)
+    log.info("Loading playlist from %s", source_str)
     if source_str.startswith(("http://", "https://")):
         with request.urlopen(source_str, timeout=30.0) as response:
             content = response.read().decode("utf8", errors="replace")
+        log.debug("Downloaded playlist bytes: %d", len(content))
         text = content.splitlines()
         return parse_playlist(text)
     path = Path(source)
     if not path.exists():
         raise PlaylistError(f"Playlist path not found: {path}")
-    return parse_playlist(path.read_text(encoding="utf8").splitlines())
+    content = path.read_text(encoding="utf8")
+    log.debug("Read playlist file %s (%d bytes)", path, len(content))
+    return parse_playlist(content.splitlines())
 
 
 def filter_channels(channels: Iterable[Channel], query: str) -> List[Channel]:
@@ -148,8 +159,16 @@ def filter_channels(channels: Iterable[Channel], query: str) -> List[Channel]:
 
     query = query.strip()
     if not query:
-        return list(channels)
-    return [channel for channel in channels if channel.matches(query)]
+        results = list(channels)
+        log.debug("Filter query empty; returning %d channels", len(results))
+        return results
+    results = [channel for channel in channels if channel.matches(query)]
+    log.debug(
+        "Filter query '%s' matched %d channel(s)",
+        query,
+        len(results),
+    )
+    return results
 
 
 __all__ = [
