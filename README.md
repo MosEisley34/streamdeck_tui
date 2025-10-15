@@ -17,20 +17,13 @@ the UI thread.
 Create and activate a Python 3.11+ environment, then install the project and development extras:
 
 ```bash
-pip install -e .[dev]
+python3 -m venv .venv
+source .venv/bin/activate
+make install
 ```
 
-### Example: dedicated virtual environment
-
-If you prefer to isolate the project in its own virtual environment, choose a directory (for example,
-`~/.virtualenvs/streamdeck_tui`) and create the environment there:
-
-```bash
-python3 -m venv ~/.virtualenvs/streamdeck_tui
-source ~/.virtualenvs/streamdeck_tui/bin/activate
-```
-
-Feel free to substitute a different path that fits your workflow. Once activated, upgrade `pip` if desired and install the project dependencies with `pip install -e .[dev]` as shown above.
+Use any virtual environment location you prefer—the `.venv` directory is only a suggestion. Once activated, the `Makefile`
+targets shown above install the editable package along with the optional development dependencies.
 
 ## Cloning the repository
 
@@ -42,12 +35,12 @@ cd streamdeck_tui
 ```
 
 Replace `<your-account>` with the GitHub namespace that hosts your fork if you are not cloning directly from the upstream
-repository. With the repository cloned and your virtual environment activated, install the project (development extras optional)
-and run the TUI:
+repository. After cloning you can use the convenience targets defined in the `Makefile`:
 
 ```bash
-pip install -e .[dev]
-streamdeck-tui
+make install   # install editable project + dev tools
+make run       # launch the TUI (equivalent to python -m streamdeck_tui)
+make test      # run pytest
 ```
 
 The `streamdeck-tui` console entry point is installed automatically when the package is installed. If you prefer not to install
