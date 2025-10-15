@@ -37,12 +37,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
     ) from exc
 
 from .config import AppConfig, ProviderConfig, CONFIG_PATH, save_config
-from .logging_utils import get_logger
 from .playlist import Channel, filter_channels, load_playlist
 from .providers import ConnectionStatus, fetch_connection_status
-
-
-log = get_logger(__name__)
 
 
 @dataclass
@@ -58,6 +54,8 @@ class ProviderState:
 
 class ChannelListItem(ListItem):
     """Render an IPTV channel in the list."""
+
+    DEFAULT_CSS = """ListItem { padding: 0 1; }"""
 
     def __init__(self, channel: Channel) -> None:
         super().__init__(Label(channel.name, id="channel-name"))
@@ -86,17 +84,26 @@ class ChannelInfo(Static):
         self.update("\n".join(lines))
 
 
-class StatusBar(Static):
-    """A simple status bar widget."""
-
-    status: reactive[str] = reactive("Ready")
-
-    def watch_status(self, status: str) -> None:
-        self.update(status)
-
-
 class ProviderForm(Static):
     """Form used to edit provider configuration."""
+
+    DEFAULT_CSS = """
+    ProviderForm {
+        border: solid green;
+        padding: 1;
+        height: auto;
+    }
+    ProviderForm Label {
+        text-style: bold;
+    }
+    ProviderForm Input {
+        margin-bottom: 1;
+    }
+    ProviderForm #form-buttons {
+        align-horizontal: right;
+        padding-top: 1;
+    }
+    """
 
     def compose(self) -> ComposeResult:
         yield Label("Provider name")
@@ -129,11 +136,83 @@ class ProviderForm(Static):
         self.query_one("#provider-name", Input).focus()
 
 
+class StatusBar(Static):
+    """A simple status bar widget."""
+
+    status: reactive[str] = reactive("Ready")
+
+    def watch_status(self, status: str) -> None:
+        self.update(status)
+
+
+_DEFAULT_CSS = """Screen {
+    layout: vertical;
+}
+
+#layout {
+    height: 1fr;
+    padding: 1 2;
+    gap: 2;
+}
+
+#providers-pane,
+#channels-pane {
+    height: 1fr;
+    gap: 1;
+}
+
+#providers-pane {
+    width: 2fr;
+}
+
+#channels-pane {
+    width: 4fr;
+}
+
+#provider-list,
+#channel-list {
+    height: 1fr;
+    border: solid $surface 1;
+    padding: 0;
+}
+
+#provider-actions {
+    gap: 1;
+}
+
+ProviderForm {
+    width: 1fr;
+}
+
+#channel-info {
+    border: solid $accent 1;
+    padding: 1;
+    height: auto;
+}
+
+#status {
+    padding: 0 1;
+    height: 3;
+    border-top: solid $surface 1;
+}
+"""
+
+
+def _load_stylesheet() -> str:
+    """Return the stylesheet bundled with the package or a baked-in fallback."""
+
+    try:
+        css_resource = resources.files(__package__).joinpath("streamdeck.css")
+        return css_resource.read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        return _DEFAULT_CSS
+
+
 class StreamdeckApp(App[None]):
     """Main Textual application."""
 
-    CSS = ""
-    CSS_PATH = "streamdeck.css"
+    CSS_PATH = None
+    CSS = _load_stylesheet()
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("/", "focus_search", "Search"),
@@ -151,6 +230,7 @@ class StreamdeckApp(App[None]):
         config_path: Optional[Path] = None,
     ) -> None:
         super().__init__()
+        self.css_path = []
         self._config = config
         self._config_path = config_path or CONFIG_PATH
         self._states: list[ProviderState] = [ProviderState(provider) for provider in config.providers]
@@ -160,11 +240,6 @@ class StreamdeckApp(App[None]):
         )
         self.filtered_channels: List[Channel] = []
         self._worker: Optional[Worker] = None
-        log.info(
-            "StreamdeckApp initialized with %d provider(s); config path=%s",
-            len(self._states),
-            self._config_path,
-        )
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -184,7 +259,6 @@ class StreamdeckApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        log.debug("Application mounted")
         self._refresh_provider_list()
         if self._states:
             self._select_provider(self._active_index or 0)
@@ -192,7 +266,6 @@ class StreamdeckApp(App[None]):
         else:
             self.query_one(StatusBar).status = "Add a provider to get started"
             self.query_one(ProviderForm).focus_name()
-            log.info("No providers configured; prompting user to add one")
 
     def _current_state(self) -> Optional[ProviderState]:
         if self._active_index is None:
@@ -202,7 +275,6 @@ class StreamdeckApp(App[None]):
         return None
 
     def _set_status(self, message: str) -> None:
-        log.debug("Status update: %s", message)
         self.query_one(StatusBar).status = message
 
     def _provider_label(self, state: ProviderState) -> str:
@@ -219,7 +291,6 @@ class StreamdeckApp(App[None]):
         return f"{state.config.name} ({detail})"
 
     def _refresh_provider_list(self) -> None:
-        log.debug("Refreshing provider list UI")
         list_view = self.query_one("#provider-list", ListView)
         previous_index = list_view.index
         list_view.clear()
@@ -238,7 +309,6 @@ class StreamdeckApp(App[None]):
         self.filtered_channels = []
 
     def _apply_filter(self, query: str) -> None:
-        log.debug("Applying channel filter: %s", query)
         state = self._current_state()
         list_view = self.query_one("#channel-list", ListView)
         list_view.clear()
@@ -281,17 +351,14 @@ class StreamdeckApp(App[None]):
         self._stop_worker()
         state.loading = True
         state.last_error = None
-        log.info("Beginning channel load for provider %s", state.config.name)
         self._refresh_provider_list()
         self._set_status(f"Loading channels for {state.config.name}…")
         self._worker = self.run_worker(self._fetch_provider(state), name=f"provider:{state.config.name}")
 
     async def _fetch_provider(self, state: ProviderState) -> None:
-        log.debug("Worker started for provider %s", state.config.name)
         try:
             channels = await asyncio.to_thread(load_playlist, state.config.playlist_url)
         except Exception as exc:  # pragma: no cover - network failures depend on environment
-            log.exception("Error loading playlist for %s", state.config.name)
             self.call_from_thread(self._handle_provider_error, state, str(exc))
         else:
             self.call_from_thread(self._handle_channels_loaded, state, channels)
@@ -299,12 +366,10 @@ class StreamdeckApp(App[None]):
                 try:
                     status = await fetch_connection_status(state.config.api_url)
                 except Exception as exc:  # pragma: no cover - network failures depend on environment
-                    log.exception("Error fetching status for %s", state.config.name)
                     self.call_from_thread(self._handle_status_error, state, str(exc))
                 else:
                     self.call_from_thread(self._handle_status_success, state, status)
         finally:
-            log.debug("Worker finished for provider %s", state.config.name)
             self.call_from_thread(self._worker_finished)
 
     def _handle_provider_error(self, state: ProviderState, message: str) -> None:
@@ -315,17 +380,11 @@ class StreamdeckApp(App[None]):
             self._clear_channels(f"Failed to load channels: {message}")
         self._refresh_provider_list()
         self._set_status(f"Failed to load {state.config.name}: {message}")
-        log.error("Provider %s failed to load: %s", state.config.name, message)
 
     def _handle_channels_loaded(self, state: ProviderState, channels: List[Channel]) -> None:
         state.loading = False
         state.last_error = None
         state.channels = channels
-        log.info(
-            "Loaded %d channels for provider %s",
-            len(channels),
-            state.config.name,
-        )
         if state is self._current_state():
             self._apply_filter(self.query_one("#search", Input).value)
             self._set_status(
@@ -336,11 +395,6 @@ class StreamdeckApp(App[None]):
     def _handle_status_success(self, state: ProviderState, status: ConnectionStatus) -> None:
         state.connection_status = status
         state.last_error = None
-        log.info(
-            "Status updated for %s: %s",
-            state.config.name,
-            status.as_label(),
-        )
         if state is self._current_state():
             self._set_status(f"{state.config.name}: {status.as_label()}")
         self._refresh_provider_list()
@@ -348,11 +402,6 @@ class StreamdeckApp(App[None]):
     def _handle_status_error(self, state: ProviderState, message: str) -> None:
         state.connection_status = None
         state.last_error = message
-        log.warning(
-            "Failed to retrieve status for %s: %s",
-            state.config.name,
-            message,
-        )
         if state is self._current_state():
             self._set_status(f"Failed to fetch status: {message}")
         self._refresh_provider_list()
@@ -369,7 +418,6 @@ class StreamdeckApp(App[None]):
         self._active_index = index
         state = self._states[index]
         self._editing_name = state.config.name
-        log.info("Selected provider %s", state.config.name)
         self.query_one(ProviderForm).populate(state.config)
         if state.channels is None:
             self._clear_channels("Loading channels…")
@@ -382,11 +430,9 @@ class StreamdeckApp(App[None]):
         return any(state.config.name == name for state in self._states)
 
     def _save_current_config(self) -> None:
-        log.debug("Persisting configuration changes")
         save_config(self._config, self._config_path)
 
     def action_focus_search(self) -> None:
-        log.debug("Focusing search input")
         self.query_one("#search", Input).focus()
 
     def action_clear_search(self) -> None:
@@ -400,7 +446,6 @@ class StreamdeckApp(App[None]):
         form.focus_name()
         self._editing_name = None
         self._set_status("Creating new provider…")
-        log.info("Creating a new provider entry")
 
     def action_save_provider(self) -> None:
         self._save_provider()
@@ -429,7 +474,6 @@ class StreamdeckApp(App[None]):
             self._refresh_provider_list()
             self._select_provider(self._active_index)
             self._set_status(f"Added provider {provider.name}")
-            log.info("Added provider %s", provider.name)
         else:
             if self._active_index is None:
                 self._set_status("No provider selected")
@@ -451,7 +495,6 @@ class StreamdeckApp(App[None]):
             self._refresh_provider_list()
             self._select_provider(self._active_index)
             self._set_status(f"Updated provider {provider.name}")
-            log.info("Updated provider %s (previously %s)", provider.name, previous_name)
 
     def action_delete_provider(self) -> None:
         if self._active_index is None or not self._states:
@@ -460,7 +503,6 @@ class StreamdeckApp(App[None]):
         state = self._states.pop(self._active_index)
         self._config.remove(state.config.name)
         self._save_current_config()
-        log.warning("Deleted provider %s", state.config.name)
         if self._states:
             self._active_index = min(self._active_index, len(self._states) - 1)
             self._editing_name = self._states[self._active_index].config.name
@@ -484,7 +526,6 @@ class StreamdeckApp(App[None]):
         state.channels = None
         state.connection_status = None
         state.last_error = None
-        log.info("Reloading provider %s", state.config.name)
         self._clear_channels("Loading channels…")
         self._load_provider(self._active_index)
 
@@ -509,7 +550,6 @@ class StreamdeckApp(App[None]):
             if state:
                 self.query_one(ProviderForm).populate(state.config)
         self._set_status("Form reset")
-        log.debug("Provider form reset")
 
     @on(ListView.Highlighted, "#provider-list")
     def _on_provider_highlighted(self, event: ListView.Highlighted) -> None:
@@ -519,11 +559,9 @@ class StreamdeckApp(App[None]):
             return
         if self._states and 0 <= event.index < len(self._states):
             self._select_provider(event.index)
-            log.debug("Provider list highlighted index %s", event.index)
 
     @on(Input.Changed, "#search")
     def on_search_changed(self, event: Input.Changed) -> None:
-        log.debug("Search changed: %s", event.value)
         self._apply_filter(event.value)
 
     @on(ListView.Highlighted, "#channel-list")
@@ -534,7 +572,6 @@ class StreamdeckApp(App[None]):
             info.channel = item.channel
         else:
             info.channel = None
-        log.debug("Channel highlighted: %s", getattr(info.channel, "name", None))
 
 
 __all__ = ["StreamdeckApp"]

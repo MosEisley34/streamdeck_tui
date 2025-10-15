@@ -7,9 +7,6 @@ from typing import Iterable
 
 from .app import StreamdeckApp
 from .config import CONFIG_PATH, load_config
-from .logging_utils import configure_logging, get_logger
-
-log = get_logger(__name__)
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -24,12 +21,9 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Iterable[str] | None = None) -> None:
-    configure_logging()
     args = parse_args(argv)
-    log.info("CLI invoked with config=%s", args.config)
     config = load_config(args.config)
     app = StreamdeckApp(config, config_path=args.config)
-    log.info("Launching Textual application")
     app.run()
 
 

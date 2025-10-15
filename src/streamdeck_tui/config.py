@@ -5,11 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
-from .logging_utils import get_logger
-
 CONFIG_PATH = Path.home() / ".config" / "streamdeck_tui" / "config.yaml"
-
-log = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -119,9 +115,7 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
 
     config_path = path or CONFIG_PATH
     if not config_path.exists():
-        log.info("Configuration file missing at %s; using defaults", config_path)
         return AppConfig()
-    log.debug("Loading configuration from %s", config_path)
     raw = config_path.read_text(encoding="utf8")
     data = _parse_config(raw)
     providers_raw = data.get("providers", []) if isinstance(data, dict) else []
@@ -132,7 +126,6 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         name = entry.get("name")
         playlist = entry.get("playlist_url")
         if not name or not playlist:
-            log.warning("Skipping provider with missing fields: %s", entry)
             continue
         providers.append(
             ProviderConfig(
@@ -141,7 +134,6 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
                 api_url=str(entry.get("api_url")) if entry.get("api_url") is not None else None,
             )
         )
-    log.info("Loaded %d providers from %s", len(providers), config_path)
     return AppConfig(providers=providers)
 
 
@@ -149,10 +141,8 @@ def save_config(config: AppConfig, path: Optional[Path] = None) -> None:
     """Persist *config* to disk at *path*."""
 
     config_path = path or CONFIG_PATH
-    log.debug("Writing configuration with %d providers to %s", len(config.providers), config_path)
     _ensure_parent(config_path)
     config_path.write_text(_dump_config(config), encoding="utf8")
-    log.info("Configuration saved to %s", config_path)
 
 
 __all__ = [

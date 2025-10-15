@@ -24,10 +24,5 @@ streamdeck-tui = "streamdeck_tui.cli:main"
 [tool.setuptools]
 package-dir = {"" = "src"}
 
-[tool.setuptools.package-data]
-"streamdeck_tui" = [
-    "streamdeck.css",
-]
-
 [tool.setuptools.packages.find]
 where = ["src"]
