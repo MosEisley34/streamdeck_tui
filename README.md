@@ -20,32 +20,6 @@ Create and activate a Python 3.11+ environment, then install the project and dev
 pip install -e .[dev]
 ```
 
-### Example: dedicated virtual environment
-
-If you want to keep a project-specific virtual environment under `/home/carlos/python_venvs/streamdeckcli_github`, create it and
-activate it with:
-
-```bash
-mkdir -p /home/carlos/python_venvs
-python3 -m venv /home/carlos/python_venvs/streamdeckcli_github
-source /home/carlos/python_venvs/streamdeckcli_github/bin/activate
-```
-
-Once activated, upgrade `pip` if desired and install the project dependencies with `pip install -e .[dev]` as shown above.
-
-## Cloning the repository
-
-To work on the application locally, clone the repository and enter the project directory:
-
-```bash
-git clone https://github.com/<your-account>/streamdeck_tui.git
-cd streamdeck_tui
-```
-
-Replace `<your-account>` with the GitHub namespace that hosts your fork if you are not cloning directly from the upstream
-repository. With the repository cloned and your virtual environment activated, run `streamdeck-tui` to launch the interface or
-`pytest` to execute the test suite.
-
 ## Configuration
 
 Configuration lives at `~/.config/streamdeck_tui/config.yaml` by default (override with `--config`). Define one or more providers
