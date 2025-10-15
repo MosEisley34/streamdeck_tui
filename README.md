@@ -57,6 +57,17 @@ the script, you can invoke the package directly:
 python -m streamdeck_tui
 ```
 
+When working directly from a fresh clone, you can also execute the Textual app module without installing the package first. Run
+either of the following commands from the project root (the second assumes you have changed into `src/streamdeck_tui`):
+
+```bash
+python src/streamdeck_tui/app.py
+# or
+python app.py
+```
+
+Both forms ensure the package-relative imports resolve correctly before launching the UI.
+
 Use `streamdeck-tui --help` (or the module equivalent) for runtime flags such as `--config` to point to a different configuration
 file. Run `pytest` to execute the test suite.
 

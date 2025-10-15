@@ -1,9 +1,16 @@
 """Textual application implementing the IPTV management TUI."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+if __name__ == "__main__" and __package__ is None:
+    # Allow running this module directly via ``python app.py`` during local development.
+    sys.path.append(str(Path(__file__).resolve().parent.parent))
+    __package__ = "streamdeck_tui"
+
 import asyncio
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Optional
 
 from textual import on
