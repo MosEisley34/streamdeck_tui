@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-from importlib import resources
 from pathlib import Path
 
 if __name__ == "__main__" and __package__ is None:
