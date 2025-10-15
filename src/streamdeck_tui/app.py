@@ -14,22 +14,28 @@ import asyncio
 from dataclasses import dataclass
 from typing import List, Optional
 
-from textual import on
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.reactive import reactive
-from textual.worker import Worker
-from textual.widgets import (
-    Button,
-    Footer,
-    Header,
-    Input,
-    Label,
-    ListItem,
-    ListView,
-    Static,
-)
+try:
+    from textual import on
+    from textual.app import App, ComposeResult
+    from textual.binding import Binding
+    from textual.containers import Horizontal, Vertical
+    from textual.reactive import reactive
+    from textual.worker import Worker
+    from textual.widgets import (
+        Button,
+        Footer,
+        Header,
+        Input,
+        Label,
+        ListItem,
+        ListView,
+        Static,
+    )
+except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
+    raise ModuleNotFoundError(
+        "The 'textual' package is required to run streamdeck_tui. "
+        "Install dependencies with 'pip install -e .[dev]' or 'pip install streamdeck-tui'."
+    ) from exc
 
 from .config import AppConfig, ProviderConfig, CONFIG_PATH, save_config
 from .playlist import Channel, filter_channels, load_playlist
@@ -199,13 +205,14 @@ def _load_stylesheet() -> str:
     try:
         css_resource = resources.files(__package__).joinpath("streamdeck.css")
         return css_resource.read_text(encoding="utf-8")
-    except (FileNotFoundError, ModuleNotFoundError):
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
         return _DEFAULT_CSS
 
 
 class StreamdeckApp(App[None]):
     """Main Textual application."""
 
+    CSS_PATH = None
     CSS = _load_stylesheet()
     BINDINGS = [
         Binding("q", "quit", "Quit"),
@@ -224,6 +231,7 @@ class StreamdeckApp(App[None]):
         config_path: Optional[Path] = None,
     ) -> None:
         super().__init__()
+        self.css_path = []
         self._config = config
         self._config_path = config_path or CONFIG_PATH
         self._states: list[ProviderState] = [ProviderState(provider) for provider in config.providers]
