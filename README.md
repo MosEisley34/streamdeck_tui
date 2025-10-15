@@ -22,16 +22,15 @@ pip install -e .[dev]
 
 ### Example: dedicated virtual environment
 
-If you want to keep a project-specific virtual environment under `/home/carlos/python_venvs/streamdeckcli_github`, create it and
-activate it with:
+If you prefer to isolate the project in its own virtual environment, choose a directory (for example,
+`~/.virtualenvs/streamdeck_tui`) and create the environment there:
 
 ```bash
-mkdir -p /home/carlos/python_venvs
-python3 -m venv /home/carlos/python_venvs/streamdeckcli_github
-source /home/carlos/python_venvs/streamdeckcli_github/bin/activate
+python3 -m venv ~/.virtualenvs/streamdeck_tui
+source ~/.virtualenvs/streamdeck_tui/bin/activate
 ```
 
-Once activated, upgrade `pip` if desired and install the project dependencies with `pip install -e .[dev]` as shown above.
+Feel free to substitute a different path that fits your workflow. Once activated, upgrade `pip` if desired and install the project dependencies with `pip install -e .[dev]` as shown above.
 
 ## Cloning the repository
 
@@ -52,10 +51,10 @@ streamdeck-tui
 ```
 
 The `streamdeck-tui` console entry point is installed automatically when the package is installed. If you prefer not to install
-the script, you can invoke the application module directly:
+the script, you can invoke the package directly:
 
 ```bash
-python -m streamdeck_tui.app
+python -m streamdeck_tui
 ```
 
 Use `streamdeck-tui --help` (or the module equivalent) for runtime flags such as `--config` to point to a different configuration
