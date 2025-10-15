@@ -3,10 +3,10 @@ PYTHON ?= python3
 .PHONY: install run test
 
 install:
-$(PYTHON) -m pip install -e .[dev]
+	$(PYTHON) -m pip install -e .[dev]
 
 run:
-$(PYTHON) -m streamdeck_tui
+	$(PYTHON) -m streamdeck_tui
 
 test:
-$(PYTHON) -m pytest
+	$(PYTHON) -m pytest
