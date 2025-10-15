@@ -55,6 +55,8 @@ class ProviderState:
 class ChannelListItem(ListItem):
     """Render an IPTV channel in the list."""
 
+    DEFAULT_CSS = """ListItem { padding: 0 1; }"""
+
     def __init__(self, channel: Channel) -> None:
         super().__init__(Label(channel.name, id="channel-name"))
         self.channel = channel
@@ -82,17 +84,26 @@ class ChannelInfo(Static):
         self.update("\n".join(lines))
 
 
-class StatusBar(Static):
-    """A simple status bar widget."""
-
-    status: reactive[str] = reactive("Ready")
-
-    def watch_status(self, status: str) -> None:
-        self.update(status)
-
-
 class ProviderForm(Static):
     """Form used to edit provider configuration."""
+
+    DEFAULT_CSS = """
+    ProviderForm {
+        border: solid green;
+        padding: 1;
+        height: auto;
+    }
+    ProviderForm Label {
+        text-style: bold;
+    }
+    ProviderForm Input {
+        margin-bottom: 1;
+    }
+    ProviderForm #form-buttons {
+        align-horizontal: right;
+        padding-top: 1;
+    }
+    """
 
     def compose(self) -> ComposeResult:
         yield Label("Provider name")
@@ -125,10 +136,83 @@ class ProviderForm(Static):
         self.query_one("#provider-name", Input).focus()
 
 
+class StatusBar(Static):
+    """A simple status bar widget."""
+
+    status: reactive[str] = reactive("Ready")
+
+    def watch_status(self, status: str) -> None:
+        self.update(status)
+
+
+_DEFAULT_CSS = """Screen {
+    layout: vertical;
+}
+
+#layout {
+    height: 1fr;
+    padding: 1 2;
+    gap: 2;
+}
+
+#providers-pane,
+#channels-pane {
+    height: 1fr;
+    gap: 1;
+}
+
+#providers-pane {
+    width: 2fr;
+}
+
+#channels-pane {
+    width: 4fr;
+}
+
+#provider-list,
+#channel-list {
+    height: 1fr;
+    border: solid $surface 1;
+    padding: 0;
+}
+
+#provider-actions {
+    gap: 1;
+}
+
+ProviderForm {
+    width: 1fr;
+}
+
+#channel-info {
+    border: solid $accent 1;
+    padding: 1;
+    height: auto;
+}
+
+#status {
+    padding: 0 1;
+    height: 3;
+    border-top: solid $surface 1;
+}
+"""
+
+
+def _load_stylesheet() -> str:
+    """Return the stylesheet bundled with the package or a baked-in fallback."""
+
+    try:
+        css_resource = resources.files(__package__).joinpath("streamdeck.css")
+        return css_resource.read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        return _DEFAULT_CSS
+
+
 class StreamdeckApp(App[None]):
     """Main Textual application."""
 
-    CSS = ""
+    CSS_PATH = None
+    CSS = _load_stylesheet()
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("/", "focus_search", "Search"),
@@ -146,6 +230,7 @@ class StreamdeckApp(App[None]):
         config_path: Optional[Path] = None,
     ) -> None:
         super().__init__()
+        self.css_path = []
         self._config = config
         self._config_path = config_path or CONFIG_PATH
         self._states: list[ProviderState] = [ProviderState(provider) for provider in config.providers]
