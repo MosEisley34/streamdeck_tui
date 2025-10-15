@@ -142,7 +142,7 @@ class StatusBar(Static):
 class StreamdeckApp(App[None]):
     """Main Textual application."""
 
-    CSS_PATH = "streamdeck.css"
+    CSS_PATH = str(Path(__file__).with_name("streamdeck.css"))
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("/", "focus_search", "Search"),
