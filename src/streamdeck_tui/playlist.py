@@ -71,8 +71,8 @@ def _parse_extinf(line: str) -> tuple[dict[str, str], str]:
             while i < len(metadata) and metadata[i] != '"':
                 buffer.append(metadata[i])
                 i += 1
+            value = "".join(buffer)
             if i >= len(metadata):
-                value = "".join(buffer)
                 attributes[current_key] = value
                 log.warning(
                     "Unterminated attribute value for %s; using remainder '%s'",
@@ -81,11 +81,22 @@ def _parse_extinf(line: str) -> tuple[dict[str, str], str]:
                 )
                 current_key = None
                 break
-            value = "".join(buffer)
+            i += 1
+            if i < len(metadata) and not metadata[i].isspace():
+                remainder = metadata[i:]
+                if remainder:
+                    value = f"{value}{remainder}"
+                attributes[current_key] = value
+                log.warning(
+                    "Unterminated attribute value for %s; using remainder '%s'",
+                    current_key,
+                    value,
+                )
+                current_key = None
+                break
             attributes[current_key] = value
             log.debug("Parsed attribute %s=%s", current_key, value)
             current_key = None
-            i += 1
         elif char == ":":
             # duration; skip until next space or end
             i += 1
