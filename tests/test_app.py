@@ -217,6 +217,53 @@ def test_action_reload_provider_requires_confirmation(monkeypatch) -> None:
     assert any("Reload confirmed" in message for message in dummy_logger.messages)
 
 
+def test_apply_filter_reuses_cached_search_index(monkeypatch) -> None:
+    from streamdeck_tui.app import ChannelInfo, StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel, build_search_index
+
+    provider = ProviderConfig(name="Test", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+    state = app._states[0]
+
+    channels = [
+        Channel(name="ESPN 1080", url="http://example.com/espn"),
+        Channel(name="News", url="http://example.com/news"),
+    ]
+
+    state.channels = channels
+    state.search_index = build_search_index(channels)
+    state.loading = False
+    app._active_index = 0
+    app._active_tab = "favorites"
+
+    recorded_indices: list[object] = []
+
+    def fake_filter(channels_arg, query_arg, search_index_arg=None):
+        recorded_indices.append(search_index_arg)
+        return list(channels_arg)
+
+    monkeypatch.setattr("streamdeck_tui.app.filter_channels", fake_filter)
+    monkeypatch.setattr(StreamdeckApp, "_cancel_channel_render", lambda self: None, raising=False)
+    monkeypatch.setattr(StreamdeckApp, "_start_channel_render", lambda self, channels: None, raising=False)
+    monkeypatch.setattr(StreamdeckApp, "_set_status", lambda self, message: None, raising=False)
+
+    class DummyChannelInfo:
+        channel = None
+
+    def fake_query_one(self, selector, expected_type=None):
+        if selector is ChannelInfo:
+            return DummyChannelInfo()
+        raise AssertionError(f"Unexpected selector {selector!r}")
+
+    monkeypatch.setattr(StreamdeckApp, "query_one", fake_query_one, raising=False)
+
+    app._apply_filter("ESPN 1080 / 1080 ESPN")
+    app._apply_filter("espn")
+
+    assert recorded_indices == [state.search_index, state.search_index]
+
+
 def test_apply_filter_streams_channel_batches() -> None:
     """Rendering large channel lists should stream results in batches."""
 
