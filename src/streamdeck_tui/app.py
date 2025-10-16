@@ -271,7 +271,7 @@ class StreamdeckApp(App[None]):
             list_view.append(ListItem(Label(self._provider_label(state))))
         if self._active_index is not None and self._states:
             list_view.index = self._active_index
-        elif previous_index < len(self._states):
+        elif previous_index is not None and previous_index < len(self._states):
             list_view.index = previous_index
 
     def _clear_channels(self, message: str = "No provider selected") -> None:
