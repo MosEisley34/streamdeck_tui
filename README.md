@@ -87,11 +87,12 @@ Launch the TUI with:
 streamdeck-tui
 ```
 
-If you have an older global installation of `streamdeck-tui`, run `make install` (or
-`pip install -e .`) after cloning to ensure the console entry point points at this
-workspace. Alternatively, invoke the module directly with `python -m streamdeck_tui`
-or `make run` so the code in your clone is always used, even if a previous
-installation is still present on the system.
+> **Important:** If you have run `pip install streamdeck-tui` previously, the
+> `streamdeck-tui` command may still point at that older installation. Always run
+> `make install` (or `pip install -e .`) after cloning so the console entry point
+> is refreshed to use the code in this workspace. You can also invoke the module
+> directly with `python -m streamdeck_tui` or `make run` to bypass any lingering
+> system-wide installation.
 
 Keyboard shortcuts:
 
@@ -107,6 +108,21 @@ Keyboard shortcuts:
 
 Provider changes are written to disk immediately, and selecting a provider triggers background tasks that fetch its playlist and
 optional status API without blocking the interface. Channels appear in the right pane with metadata and instantaneous filtering.
+
+### Troubleshooting startup errors
+
+If Textual reports a stylesheet error that references
+`.../site-packages/streamdeck_tui/streamdeck.css`, you are launching an older
+installation that still bundles the deprecated CSS file. Fix it by running:
+
+```bash
+pip uninstall -y streamdeck-tui
+make install
+```
+
+or, if you prefer not to install the console script, execute the module directly
+with `python -m streamdeck_tui`. The application no longer loads external
+stylesheets, so once the editable install is in place the error will disappear.
 
 ## Collecting logs
 
