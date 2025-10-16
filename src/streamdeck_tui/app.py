@@ -102,9 +102,9 @@ class ProviderForm(Static):
         yield Label("Provider name")
         yield Input(placeholder="Name", id="provider-name")
         yield Label("Playlist URL")
-        yield Input(placeholder="Enter playlist address", id="provider-playlist")
+        yield Input(placeholder="Playlist URL", id="provider-playlist")
         yield Label("API URL (optional)")
-        yield Input(placeholder="Enter status API endpoint", id="provider-api")
+        yield Input(placeholder="Status API URL (optional)", id="provider-api")
         with Horizontal(id="form-buttons"):
             yield Button("Reset", id="provider-reset")
             yield Button("Save", id="provider-save", variant="success")
@@ -341,20 +341,20 @@ class StreamdeckApp(App[None]):
             channels = await asyncio.to_thread(load_playlist, state.config.playlist_url)
         except Exception as exc:  # pragma: no cover - network failures depend on environment
             log.exception("Error loading playlist for %s", state.config.name)
-            self._handle_provider_error(state, str(exc))
+            self.call_from_thread(self._handle_provider_error, state, str(exc))
         else:
-            self._handle_channels_loaded(state, channels)
+            self.call_from_thread(self._handle_channels_loaded, state, channels)
             if state.config.api_url:
                 try:
                     status = await fetch_connection_status(state.config.api_url)
                 except Exception as exc:  # pragma: no cover - network failures depend on environment
                     log.exception("Error fetching status for %s", state.config.name)
-                    self._handle_status_error(state, str(exc))
+                    self.call_from_thread(self._handle_status_error, state, str(exc))
                 else:
-                    self._handle_status_success(state, status)
+                    self.call_from_thread(self._handle_status_success, state, status)
         finally:
             log.debug("Worker finished for provider %s", state.config.name)
-            self._worker_finished()
+            self.call_from_thread(self._worker_finished)
 
     def _handle_provider_error(self, state: ProviderState, message: str) -> None:
         state.loading = False
@@ -562,10 +562,7 @@ class StreamdeckApp(App[None]):
 
     @on(ListView.Highlighted, "#provider-list")
     def _on_provider_highlighted(self, event: ListView.Highlighted) -> None:
-        list_view = getattr(event, "list_view", None) or getattr(event, "control", None)
-        if not isinstance(list_view, ListView):
-            return
-        index = list_view.index
+        index = event.list_view.index
         if index is None:
             return
         if index == self._active_index:

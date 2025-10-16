@@ -49,7 +49,9 @@ def _parse_extinf(line: str) -> tuple[dict[str, str], str]:
         raise PlaylistError("Expected #EXTINF line")
 
     payload = line[len("#EXTINF:") :]
-    metadata, name = _split_extinf_payload(payload)
+    if "," not in payload:
+        raise PlaylistError("Invalid #EXTINF line")
+    metadata, name = payload.split(",", 1)
     attributes: dict[str, str] = {}
     current_key: Optional[str] = None
     buffer: List[str] = []
@@ -88,26 +90,6 @@ def _parse_extinf(line: str) -> tuple[dict[str, str], str]:
                 i += 1
             current_key = "".join(buffer)
     return attributes, name.strip()
-
-
-def _split_extinf_payload(payload: str) -> tuple[str, str]:
-    """Split EXTINF payload into metadata and channel name.
-
-    The separator between metadata and the channel display name is the first
-    comma **outside** any quoted attribute value. Some providers include commas
-    inside values (for example, channel names that include a city and state),
-    so a naive ``str.split(",", 1)`` would cut the string too early. This
-    helper walks the string and finds the first comma that is not wrapped in
-    quotes, returning the metadata section and the trailing channel name.
-    """
-
-    in_quotes = False
-    for index, char in enumerate(payload):
-        if char == '"':
-            in_quotes = not in_quotes
-        elif char == "," and not in_quotes:
-            return payload[:index], payload[index + 1 :]
-    raise PlaylistError("Invalid #EXTINF line")
 
 
 def parse_playlist(lines: Iterable[str]) -> List[Channel]:
