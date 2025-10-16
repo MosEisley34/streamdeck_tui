@@ -302,6 +302,7 @@ class StreamdeckApp(App[None]):
     CHANNEL_RENDER_BATCH_SIZE = 200
     CHANNEL_RENDER_BATCH_DELAY = 0.001
     BINDINGS = [
+        Binding("ctrl+c", "quit", "Quit"),
         Binding("q", "quit", "Quit"),
         Binding("/", "focus_search", "Search"),
         Binding("escape", "clear_search", "Clear search"),

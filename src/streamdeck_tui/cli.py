@@ -32,7 +32,13 @@ def main(argv: Iterable[str] | None = None) -> None:
     config = load_config(args.config)
     app = StreamdeckApp(config, config_path=args.config)
     log.info("Launching Textual application")
-    app.run()
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        log.info("Keyboard interrupt received; exiting application")
+        if app.is_running:
+            app.exit()
+        raise SystemExit(130) from None
 
 
 def warn_if_legacy_stylesheet() -> None:
