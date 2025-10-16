@@ -12,7 +12,7 @@ import threading
 import weakref
 
 if TYPE_CHECKING:  # pragma: no cover - only for typing
-    from .app import LogViewer
+    from .app import LogViewer, StreamdeckApp
 
 __all__ = ["configure_logging", "get_logger", "register_log_viewer"]
 
@@ -129,12 +129,34 @@ class _UILogHandler(logging.Handler):
             self.handleError(record)
 
 
-def configure_logging(*, level: Optional[str] = None) -> logging.Logger:
+_MISSING = object()
+
+
+def configure_logging(
+    *,
+    level: Optional[str] = None,
+    app: object = _MISSING,
+    log_viewer: object = _MISSING,
+) -> logging.Logger:
     """Configure the package logger if it hasn't been set up yet."""
 
     logger = logging.getLogger("streamdeck_tui")
+
+    if app is not _MISSING:
+        configure_logging._app = app  # type: ignore[attr-defined]
+    if log_viewer is not _MISSING:
+        configure_logging._log_viewer = log_viewer  # type: ignore[attr-defined]
+
+    stored_app: Optional["StreamdeckApp"] = getattr(configure_logging, "_app", None)
+    stored_viewer: Optional["LogViewer"] = getattr(
+        configure_logging, "_log_viewer", None
+    )
+
     if getattr(configure_logging, "_configured", False):
-        _attach_textual_handler(logger, app=app, log_viewer=log_viewer)
+        if stored_app is not None and stored_viewer is not None:
+            _attach_textual_handler(
+                logger, app=stored_app, log_viewer=stored_viewer
+            )
         return logger
 
     env_level = os.getenv(_ENV_LEVEL)
@@ -173,7 +195,8 @@ def configure_logging(*, level: Optional[str] = None) -> logging.Logger:
 
     configure_logging._ui_handler = ui_handler  # type: ignore[attr-defined]
     configure_logging._configured = True  # type: ignore[attr-defined]
-    _attach_textual_handler(logger, app=app, log_viewer=log_viewer)
+    if stored_app is not None and stored_viewer is not None:
+        _attach_textual_handler(logger, app=stored_app, log_viewer=stored_viewer)
     logger.debug("Logging configured with level %s", logging.getLevelName(log_level))
     return logger
 
