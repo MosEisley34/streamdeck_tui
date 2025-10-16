@@ -1,0 +1,34 @@
+#layout {
+    layout: horizontal;
+    height: 1fr;
+    padding: 1 2;
+}
+
+#providers-pane {
+    layout: vertical;
+    min-width: 30;
+    padding: 1;
+}
+
+#provider-actions {
+    layout: horizontal;
+    padding-top: 1;
+}
+
+#channels-pane {
+    layout: vertical;
+    height: 1fr;
+    padding: 1;
+}
+
+#channel-list {
+    height: 1fr;
+}
+
+#channel-info {
+    padding: 1;
+}
+
+StatusBar {
+    padding: 0 1;
+}
