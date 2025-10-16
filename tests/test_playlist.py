@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -38,3 +39,37 @@ def test_filter_channels_matches_multiple_fields():
 def test_parse_playlist_requires_metadata_for_stream_url():
     with pytest.raises(PlaylistError):
         parse_playlist(["#EXTM3U", "http://example.com"])
+
+
+def test_parse_playlist_recovers_from_unterminated_attribute(caplog):
+    malformed_playlist = [
+        "#EXTM3U",
+        '#EXTINF:-1 tvg-id="channel1" group-title="News" tvg-logo="http://logo,Channel One',
+        "http://example.com/stream1",
+        '#EXTINF:-1 tvg-id="channel2" group-title="Sports",Channel Two',
+        "http://example.com/stream2",
+    ]
+
+    class _CapturingHandler(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__(level=logging.NOTSET)
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - simple
+            self.records.append(record)
+
+    logger = logging.getLogger("streamdeck_tui.playlist")
+    handler = _CapturingHandler()
+    logger.addHandler(handler)
+    try:
+        with caplog.at_level("WARNING", logger=logger.name):
+            channels = parse_playlist(malformed_playlist)
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    assert [channel.name for channel in channels] == ["Channel One", "Channel Two"]
+    assert any(
+        "Unterminated attribute value" in record.getMessage()
+        for record in handler.records
+    )
