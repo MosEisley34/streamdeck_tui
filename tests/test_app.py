@@ -1,5 +1,6 @@
 """Unit tests for StreamdeckApp helpers."""
 
+import asyncio
 import importlib.util
 from datetime import datetime, timedelta, timezone
 
@@ -128,7 +129,11 @@ def test_action_reload_provider_requires_confirmation(monkeypatch) -> None:
     dummy_logger = DummyLogger()
     monkeypatch.setattr(app_module, "log", dummy_logger)
 
-    provider = ProviderConfig(name="Demo", playlist_url="http://example.com")
+    provider = ProviderConfig(
+        name="Demo",
+        playlist_url="http://example.com",
+        api_url="http://example.com/status",
+    )
     app = StreamdeckApp(AppConfig(providers=[provider]))
     app._active_index = 0
     state = app._states[0]
@@ -189,7 +194,11 @@ def test_action_reload_provider_without_recent_load(monkeypatch) -> None:
     from streamdeck_tui.app import StreamdeckApp
     from streamdeck_tui.config import AppConfig, ProviderConfig
 
-    provider = ProviderConfig(name="Demo", playlist_url="http://example.com")
+    provider = ProviderConfig(
+        name="Demo",
+        playlist_url="http://example.com",
+        api_url="http://example.com/status",
+    )
     app = StreamdeckApp(AppConfig(providers=[provider]))
     app._active_index = 0
     state = app._states[0]
@@ -210,3 +219,88 @@ def test_action_reload_provider_without_recent_load(monkeypatch) -> None:
     app.action_reload_provider()
 
     assert load_calls == [(0, True)]
+
+
+
+def test_fetch_provider_success_on_app_thread(monkeypatch) -> None:
+    """Directly running the worker coroutine should clear loading state."""
+
+    from streamdeck_tui import app as app_module
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel
+    from streamdeck_tui.providers import ConnectionStatus
+
+    provider = ProviderConfig(
+        name="Demo",
+        playlist_url="http://example.com",
+        api_url="http://example.com/status",
+    )
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+    state = app._states[0]
+    state.loading = True
+    app._worker = object()
+
+    monkeypatch.setattr(StreamdeckApp, "_apply_filter", lambda self, query: None, raising=False)
+    monkeypatch.setattr(StreamdeckApp, "_set_status", lambda self, message: None, raising=False)
+    monkeypatch.setattr(StreamdeckApp, "_refresh_provider_list", lambda self: None, raising=False)
+
+    dummy_search = type("DummySearch", (), {"value": ""})()
+
+    def fake_query_one(self, selector: str, expected_type=None):  # pragma: no cover - trivial stub
+        if selector == "#search":
+            return dummy_search
+        raise AssertionError(f"Unexpected selector: {selector}")
+
+    monkeypatch.setattr(StreamdeckApp, "query_one", fake_query_one, raising=False)
+
+    channels = [Channel(name="Demo", url="http://example.com/stream")]
+
+    monkeypatch.setattr(app_module, "load_playlist", lambda url: list(channels), raising=False)
+
+    async def fake_status(_: str) -> ConnectionStatus:
+        return ConnectionStatus(message="OK")
+
+    monkeypatch.setattr(app_module, "fetch_connection_status", fake_status, raising=False)
+
+    asyncio.run(app._fetch_provider(state))
+
+    assert state.loading is False
+    assert state.last_error is None
+    assert state.channels == channels
+    assert state.connection_status is not None
+    assert state.connection_status.message == "OK"
+    assert state.last_loaded_at is not None
+    assert app._worker is None
+
+
+def test_fetch_provider_error_on_app_thread(monkeypatch) -> None:
+    """Errors raised while loading should surface through the handler."""
+
+    from streamdeck_tui import app as app_module
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+
+    provider = ProviderConfig(name="Demo", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+    state = app._states[0]
+    state.loading = True
+    app._worker = object()
+
+    monkeypatch.setattr(StreamdeckApp, "_set_status", lambda self, message: None, raising=False)
+    monkeypatch.setattr(StreamdeckApp, "_refresh_provider_list", lambda self: None, raising=False)
+    monkeypatch.setattr(StreamdeckApp, "_clear_channels", lambda self, message="": None, raising=False)
+
+    def failing_loader(_: str) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(app_module, "load_playlist", failing_loader, raising=False)
+
+    asyncio.run(app._fetch_provider(state))
+
+    assert state.loading is False
+    assert state.channels is None
+    assert state.last_error == "boom"
+    assert state.connection_status is None
+    assert state.last_loaded_at is None
+    assert app._worker is None
