@@ -47,6 +47,7 @@ from .config import AppConfig, ProviderConfig, CONFIG_PATH, save_config
 from .logging_utils import get_logger, register_log_viewer
 from .playlist import Channel, filter_channels, load_playlist
 from .providers import ConnectionStatus, fetch_connection_status
+from .log_viewer import LogViewer
 
 
 log = get_logger(__name__)
@@ -330,6 +331,7 @@ class StreamdeckApp(App[None]):
         self._player_task: Optional[asyncio.Task[None]] = None
         self._worker: Optional[Worker] = None
         self._app_thread_id: int = threading.get_ident()
+        self._log_viewer: Optional[LogViewer] = None
         log.debug("Inline stylesheet active (%d characters)", len(self.CSS))
         log.info(
             "StreamdeckApp initialized with %d provider(s); config path=%s",
@@ -369,6 +371,8 @@ class StreamdeckApp(App[None]):
     def on_mount(self) -> None:
         log.debug("Application mounted")
         self._app_thread_id = threading.get_ident()
+        if self._log_viewer is not None:
+            configure_logging(log_viewer=self._log_viewer, app=self)
         self._refresh_provider_list()
         if self._states:
             self._select_provider(self._active_index or 0)
