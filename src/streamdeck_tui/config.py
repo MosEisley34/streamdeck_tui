@@ -26,6 +26,7 @@ class AppConfig:
     """Top level application configuration."""
 
     providers: list[ProviderConfig] = field(default_factory=list)
+    favorites: list["FavoriteChannel"] = field(default_factory=list)
 
     def add_or_update(self, provider: ProviderConfig) -> None:
         """Insert or update a provider configuration by name."""
@@ -40,11 +41,60 @@ class AppConfig:
         """Remove a provider by name if it exists."""
 
         self.providers = [p for p in self.providers if p.name != provider_name]
+        self.favorites = [favorite for favorite in self.favorites if favorite.provider != provider_name]
 
     def names(self) -> Iterable[str]:
         """Return provider names."""
 
         return [provider.name for provider in self.providers]
+
+    def find_favorite(self, provider_name: str, channel_url: str) -> Optional["FavoriteChannel"]:
+        """Return the matching favorite entry if it exists."""
+
+        for favorite in self.favorites:
+            if favorite.provider == provider_name and favorite.channel_url == channel_url:
+                return favorite
+        return None
+
+    def add_favorite(self, favorite: "FavoriteChannel") -> None:
+        """Add a favorite if it is not already present."""
+
+        if self.find_favorite(favorite.provider, favorite.channel_url) is None:
+            self.favorites.append(favorite)
+
+    def remove_favorite(self, provider_name: str, channel_url: str) -> None:
+        """Remove a favorite channel if present."""
+
+        self.favorites = [
+            favorite
+            for favorite in self.favorites
+            if not (favorite.provider == provider_name and favorite.channel_url == channel_url)
+        ]
+
+
+@dataclass(slots=True)
+class FavoriteChannel:
+    """A persistent reference to a favorited channel."""
+
+    provider: str
+    channel_name: str
+    channel_url: str
+    group: Optional[str] = None
+    logo: Optional[str] = None
+
+    def as_dict(self) -> dict[str, Optional[str]]:
+        """Return a serializable representation of the favorite."""
+
+        data: dict[str, Optional[str]] = {
+            "provider": self.provider,
+            "channel_name": self.channel_name,
+            "channel_url": self.channel_url,
+        }
+        if self.group:
+            data["group"] = self.group
+        if self.logo:
+            data["logo"] = self.logo
+        return data
 
 
 def _ensure_parent(path: Path) -> None:
@@ -102,14 +152,28 @@ def _parse_config(raw: str) -> dict[str, object]:
 
 
 def _dump_config(data: AppConfig) -> str:
-    if not data.providers:
-        return "providers: []\n"
-    lines = ["providers:"]
-    for provider in data.providers:
-        lines.append("  - name: " + provider.name)
-        lines.append("    playlist_url: " + provider.playlist_url)
-        if provider.api_url:
-            lines.append("    api_url: " + provider.api_url)
+    lines: list[str] = []
+    if data.providers:
+        lines.append("providers:")
+        for provider in data.providers:
+            lines.append("  - name: " + provider.name)
+            lines.append("    playlist_url: " + provider.playlist_url)
+            if provider.api_url:
+                lines.append("    api_url: " + provider.api_url)
+    else:
+        lines.append("providers: []")
+    if data.favorites:
+        lines.append("favorites:")
+        for favorite in data.favorites:
+            lines.append("  - provider: " + favorite.provider)
+            lines.append("    channel_name: " + favorite.channel_name)
+            lines.append("    channel_url: " + favorite.channel_url)
+            if favorite.group:
+                lines.append("    group: " + favorite.group)
+            if favorite.logo:
+                lines.append("    logo: " + favorite.logo)
+    else:
+        lines.append("favorites: []")
     lines.append("")
     return "\n".join(lines)
 
@@ -125,7 +189,9 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     raw = config_path.read_text(encoding="utf8")
     data = _parse_config(raw)
     providers_raw = data.get("providers", []) if isinstance(data, dict) else []
+    favorites_raw = data.get("favorites", []) if isinstance(data, dict) else []
     providers: list[ProviderConfig] = []
+    favorites: list[FavoriteChannel] = []
     for entry in providers_raw:
         if not isinstance(entry, dict):  # pragma: no cover - invalid config guard
             continue
@@ -141,8 +207,31 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
                 api_url=str(entry.get("api_url")) if entry.get("api_url") is not None else None,
             )
         )
-    log.info("Loaded %d providers from %s", len(providers), config_path)
-    return AppConfig(providers=providers)
+    for entry in favorites_raw:
+        if not isinstance(entry, dict):  # pragma: no cover - invalid config guard
+            continue
+        provider = entry.get("provider")
+        channel_url = entry.get("channel_url") or entry.get("url")
+        channel_name = entry.get("channel_name") or entry.get("name")
+        if not provider or not channel_url:
+            log.warning("Skipping favorite with missing fields: %s", entry)
+            continue
+        favorites.append(
+            FavoriteChannel(
+                provider=str(provider),
+                channel_name=str(channel_name) if channel_name is not None else str(channel_url),
+                channel_url=str(channel_url),
+                group=str(entry.get("group")) if entry.get("group") is not None else None,
+                logo=str(entry.get("logo")) if entry.get("logo") is not None else None,
+            )
+        )
+    log.info(
+        "Loaded %d providers and %d favorite(s) from %s",
+        len(providers),
+        len(favorites),
+        config_path,
+    )
+    return AppConfig(providers=providers, favorites=favorites)
 
 
 def save_config(config: AppConfig, path: Optional[Path] = None) -> None:
@@ -158,6 +247,7 @@ def save_config(config: AppConfig, path: Optional[Path] = None) -> None:
 __all__ = [
     "AppConfig",
     "ProviderConfig",
+    "FavoriteChannel",
     "CONFIG_PATH",
     "load_config",
     "save_config",
