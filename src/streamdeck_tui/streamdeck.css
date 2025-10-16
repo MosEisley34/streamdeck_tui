@@ -2,17 +2,21 @@
     height: 1fr;
 }
 
-#providers-tab,
-#channels-tab,
-#favorites-tab,
-#logs-tab {
-    padding: 1 2;
+TabPane {
+    padding: 0;
+}
+
+#providers-pane,
+#channels-pane,
+#favorites-pane,
+#logs-pane {
+    layout: vertical;
+    height: 1fr;
+    padding: 1;
 }
 
 #providers-pane {
-    layout: vertical;
     min-width: 30;
-    padding: 1;
 }
 
 #provider-actions {
@@ -20,23 +24,21 @@
     padding-top: 1;
 }
 
-#channels-pane {
-    layout: vertical;
-    height: 1fr;
-    padding: 1;
-}
-
-#favorites-placeholder,
+#channel-list,
+#favorites-list,
 #log-viewer {
-    padding: 1;
-}
-
-#channel-list {
     height: 1fr;
 }
 
-#channel-info {
+#channel-info,
+#favorites-help {
     padding: 1;
+}
+
+#log-viewer {
+    border: heavy $surface;
+    padding: 0 1;
+    overflow-y: auto;
 }
 
 StatusBar {

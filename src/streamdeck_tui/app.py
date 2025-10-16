@@ -10,10 +10,12 @@ if __name__ == "__main__" and __package__ is None:
     __package__ = "streamdeck_tui"
 
 import asyncio
+from asyncio.subprocess import Process
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, List, Optional
+from typing import Callable, Iterable, List, Optional
 
 try:
     from textual import on
@@ -32,8 +34,8 @@ try:
         ListItem,
         ListView,
         Static,
-        TabbedContent,
         TabPane,
+        TabbedContent,
     )
 except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
     raise ModuleNotFoundError(
@@ -42,7 +44,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
     ) from exc
 
 from .config import AppConfig, ProviderConfig, CONFIG_PATH, save_config
-from .logging_utils import configure_logging, get_logger
+from .logging_utils import get_logger, register_log_viewer
 from .playlist import Channel, filter_channels, load_playlist
 from .providers import ConnectionStatus, fetch_connection_status
 from .log_viewer import LogViewer
@@ -92,6 +94,15 @@ class ChannelListItem(ListItem):
         self.channel = channel
 
 
+class FavoriteListItem(ListItem):
+    """Render a favorited channel in the list."""
+
+    def __init__(self, favorite: FavoriteChannel) -> None:
+        label = f"{favorite.channel_name} ({favorite.provider})"
+        super().__init__(Label(label, id="channel-name"))
+        self.favorite = favorite
+
+
 class ChannelInfo(Static):
     """Display information about the currently selected channel."""
 
@@ -121,6 +132,47 @@ class StatusBar(Static):
 
     def watch_status(self, status: str) -> None:
         self.update(status)
+
+
+class LogViewer(Static):
+    """Widget that displays recent log messages from the application."""
+
+    def __init__(self, *args, max_lines: int = 200, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._messages: deque[str] = deque(maxlen=max_lines)
+
+    def on_mount(self) -> None:  # pragma: no cover - exercised via integration test
+        register_log_viewer(self)
+        if not self._messages:
+            self.update("No log messages yet.")
+
+    def on_unmount(self) -> None:  # pragma: no cover - defensive cleanup
+        register_log_viewer(None)
+
+    def append_message(self, message: str) -> None:
+        """Append a single log *message* to the buffer and refresh display."""
+
+        self._messages.append(message)
+        self._render()
+
+    def replace_messages(self, messages: Iterable[str]) -> None:
+        """Replace the buffer with *messages* and refresh display."""
+
+        self._messages.clear()
+        for message in messages:
+            self._messages.append(message)
+        self._render()
+
+    def get_messages(self) -> tuple[str, ...]:
+        """Return a snapshot of the buffered messages."""
+
+        return tuple(self._messages)
+
+    def _render(self) -> None:
+        if self._messages:
+            self.update("\n".join(self._messages))
+        else:
+            self.update("No log messages yet.")
 
 
 class ProviderForm(Static):
@@ -192,17 +244,21 @@ _INLINE_DEFAULT_CSS = """
     height: 1fr;
 }
 
-#providers-tab,
-#channels-tab,
-#favorites-tab,
-#logs-tab {
-    padding: 1 2;
+TabPane {
+    padding: 0;
+}
+
+#providers-pane,
+#channels-pane,
+#favorites-pane,
+#logs-pane {
+    layout: vertical;
+    height: 1fr;
+    padding: 1;
 }
 
 #providers-pane {
-    layout: vertical;
     min-width: 30;
-    padding: 1;
 }
 
 #provider-actions {
@@ -210,23 +266,21 @@ _INLINE_DEFAULT_CSS = """
     padding-top: 1;
 }
 
-#channels-pane {
-    layout: vertical;
-    height: 1fr;
-    padding: 1;
-}
-
-#favorites-placeholder,
+#channel-list,
+#favorites-list,
 #log-viewer {
-    padding: 1;
-}
-
-#channel-list {
     height: 1fr;
 }
 
-#channel-info {
+#channel-info,
+#favorites-help {
     padding: 1;
+}
+
+#log-viewer {
+    border: heavy $surface;
+    padding: 0 1;
+    overflow-y: auto;
 }
 
 StatusBar {
@@ -251,6 +305,9 @@ class StreamdeckApp(App[None]):
         Binding("ctrl+s", "save_provider", "Save provider"),
         Binding("delete", "delete_provider", "Delete provider"),
         Binding("r", "reload_provider", "Reload provider"),
+        Binding("p", "play_channel", "Play"),
+        Binding("s", "stop_channel", "Stop"),
+        Binding("f", "toggle_favorite", "Favorite"),
     ]
 
     def __init__(
@@ -268,6 +325,10 @@ class StreamdeckApp(App[None]):
             self._states[0].config.name if self._states else None
         )
         self.filtered_channels: List[Channel] = []
+        self._favorite_entries: list[FavoriteChannel] = list(config.favorites)
+        self._active_tab: str = "channels"
+        self._player_process: Optional[Process] = None
+        self._player_task: Optional[asyncio.Task[None]] = None
         self._worker: Optional[Worker] = None
         self._app_thread_id: int = threading.get_ident()
         self._log_viewer: Optional[LogViewer] = None
@@ -295,11 +356,15 @@ class StreamdeckApp(App[None]):
                     yield ListView(id="channel-list")
                     yield ChannelInfo(id="channel-info")
             with TabPane("Favorites", id="favorites-tab"):
-                yield Static("Favorites coming soon", id="favorites-placeholder")
+                with Vertical(id="favorites-pane"):
+                    yield ListView(id="favorites-list")
+                    yield Static(
+                        "Mark channels as favorites to see them listed here.",
+                        id="favorites-help",
+                    )
             with TabPane("Logs", id="logs-tab"):
-                log_viewer = LogViewer(id="log-viewer")
-                self._log_viewer = log_viewer
-                yield log_viewer
+                with Vertical(id="logs-pane"):
+                    yield LogViewer(id="log-viewer")
         yield StatusBar(id="status")
         yield Footer()
 
@@ -316,6 +381,8 @@ class StreamdeckApp(App[None]):
             self.query_one(StatusBar).status = "Add a provider to get started"
             self.query_one(ProviderForm).focus_name()
             log.info("No providers configured; prompting user to add one")
+        self._update_tab_buttons()
+        self._refresh_favorites_view()
 
     def _current_state(self) -> Optional[ProviderState]:
         if self._active_index is None:
@@ -327,6 +394,149 @@ class StreamdeckApp(App[None]):
     def _set_status(self, message: str) -> None:
         log.debug("Status update: %s", message)
         self.query_one(StatusBar).status = message
+
+    def _update_tab_buttons(self) -> None:
+        """Refresh the visual state of the tab controls."""
+
+        try:
+            channels_button = self.query_one("#tab-channels", Button)
+            favorites_button = self.query_one("#tab-favorites", Button)
+            search_input = self.query_one("#search", Input)
+        except Exception:  # pragma: no cover - defensive guard for tests
+            return
+        channels_button.variant = "primary" if self._active_tab == "channels" else "default"
+        favorites_button.variant = "primary" if self._active_tab == "favorites" else "default"
+        search_input.disabled = self._active_tab != "channels"
+
+    def _favorite_to_channel(self, favorite: FavoriteChannel) -> Channel:
+        """Convert a stored favorite entry back into a channel."""
+
+        raw_attributes = {"provider": favorite.provider}
+        return Channel(
+            name=favorite.channel_name,
+            url=favorite.channel_url,
+            group=favorite.group,
+            logo=favorite.logo,
+            raw_attributes=raw_attributes,
+        )
+
+    def _refresh_favorites_view(self) -> None:
+        """Update the favorites list when the tab is active."""
+
+        self._favorite_entries = list(self._config.favorites)
+        if self._active_tab != "favorites":
+            return
+        try:
+            list_view = self.query_one("#channel-list", ListView)
+            info = self.query_one(ChannelInfo)
+        except Exception:  # pragma: no cover - defensive for tests without UI
+            return
+        list_view.clear()
+        if not self._favorite_entries:
+            list_view.append(ListItem(Label("No favorite channels saved")))
+            info.channel = None
+            return
+        for favorite in self._favorite_entries:
+            list_view.append(FavoriteListItem(favorite))
+        list_view.index = 0
+        info.channel = self._favorite_to_channel(self._favorite_entries[0])
+        self._set_status(f"Showing {len(self._favorite_entries)} favorite channel(s)")
+
+    def _set_active_tab(self, tab: str) -> None:
+        if tab not in {"channels", "favorites"}:
+            return
+        if self._active_tab == tab:
+            return
+        self._active_tab = tab
+        self._update_tab_buttons()
+        if tab == "channels":
+            try:
+                query = self.query_one("#search", Input).value
+            except Exception:  # pragma: no cover - tests without UI
+                query = ""
+            self._apply_filter(query)
+        else:
+            self._refresh_favorites_view()
+
+    def _get_selected_entry(
+        self,
+    ) -> tuple[Optional[str], Optional[Channel], Optional[FavoriteChannel]]:
+        """Return information about the currently selected entry."""
+
+        list_view = self.query_one("#channel-list", ListView)
+        index = getattr(list_view, "index", None)
+        if index is None:
+            return None, None, None
+        if self._active_tab == "channels":
+            if not self.filtered_channels or not (0 <= index < len(self.filtered_channels)):
+                return None, None, None
+            state = self._current_state()
+            if state is None:
+                return None, None, None
+            return state.config.name, self.filtered_channels[index], None
+        if not self._favorite_entries or not (0 <= index < len(self._favorite_entries)):
+            return None, None, None
+        favorite = self._favorite_entries[index]
+        return favorite.provider, self._favorite_to_channel(favorite), favorite
+
+    def _start_player_for_channel(self, provider_name: str, channel: Channel) -> None:
+        """Launch a media player for the supplied channel."""
+
+        async def runner() -> None:
+            try:
+                process = await launch_player(channel)
+            except Exception as exc:  # pragma: no cover - exercised via tests
+                self._call_on_app_thread(
+                    self._handle_player_failure,
+                    provider_name,
+                    channel.name,
+                    str(exc),
+                )
+                return
+            self._call_on_app_thread(self._handle_player_started, provider_name, channel, process)
+            try:
+                await process.wait()
+            except Exception as exc:  # pragma: no cover - process wait failures are rare
+                log.warning("Player wait failed for %s: %s", channel.name, exc)
+            finally:
+                self._call_on_app_thread(self._handle_player_finished, channel.name)
+
+        self._stop_player_process()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(runner())
+        else:
+            self._player_task = loop.create_task(runner())
+
+    def _handle_player_started(self, provider_name: str, channel: Channel, process: Process) -> None:
+        self._player_process = process
+        self._set_status(f"Playing {channel.name} from {provider_name}")
+        log.info("Player launched for %s (%s)", channel.name, provider_name)
+
+    def _handle_player_finished(self, channel_name: str) -> None:
+        self._player_process = None
+        self._player_task = None
+        self._set_status(f"Playback finished for {channel_name}")
+        log.info("Player exited for %s", channel_name)
+
+    def _handle_player_failure(self, provider_name: str, channel_name: str, message: str) -> None:
+        self._player_process = None
+        self._player_task = None
+        error = f"Failed to launch player for {channel_name} ({provider_name}): {message}"
+        self._set_status(error)
+        log.error(error)
+
+    def _stop_player_process(self) -> None:
+        if self._player_task:
+            self._player_task.cancel()
+            self._player_task = None
+        if self._player_process:
+            try:
+                self._player_process.terminate()
+            except ProcessLookupError:  # pragma: no cover - defensive guard
+                pass
+        self._player_process = None
 
     def _provider_label(self, state: ProviderState) -> str:
         if state.loading:
@@ -359,41 +569,51 @@ class StreamdeckApp(App[None]):
             list_view.index = None
 
     def _clear_channels(self, message: str = "No provider selected") -> None:
+        self.filtered_channels = []
+        self.query_one(ChannelInfo).channel = None
+        if self._active_tab != "channels":
+            return
         list_view = self.query_one("#channel-list", ListView)
         list_view.clear()
         list_view.append(ListItem(Label(message)))
-        self.query_one(ChannelInfo).channel = None
-        self.filtered_channels = []
 
     def _apply_filter(self, query: str) -> None:
         log.debug("Applying channel filter: %s", query)
         state = self._current_state()
-        list_view = self.query_one("#channel-list", ListView)
-        list_view.clear()
         info = self.query_one(ChannelInfo)
         if state is None:
-            list_view.append(ListItem(Label("No provider selected")))
             info.channel = None
             self.filtered_channels = []
+            if self._active_tab == "channels":
+                list_view = self.query_one("#channel-list", ListView)
+                list_view.clear()
+                list_view.append(ListItem(Label("No provider selected")))
             return
         if state.channels is None:
             if state.loading:
-                list_view.append(ListItem(Label("Loading channels…")))
+                message = "Loading channels…"
             else:
-                list_view.append(ListItem(Label("Channels not loaded")))
+                message = "Channels not loaded"
             info.channel = None
             self.filtered_channels = []
+            if self._active_tab == "channels":
+                list_view = self.query_one("#channel-list", ListView)
+                list_view.clear()
+                list_view.append(ListItem(Label(message)))
             return
         channels = filter_channels(state.channels, query)
         self.filtered_channels = channels
-        if not channels:
-            list_view.append(ListItem(Label("No channels found")))
-            info.channel = None
-        else:
-            for channel in channels:
-                list_view.append(ChannelListItem(channel))
-            list_view.index = 0
-            info.channel = channels[0]
+        if self._active_tab == "channels":
+            list_view = self.query_one("#channel-list", ListView)
+            list_view.clear()
+            if not channels:
+                list_view.append(ListItem(Label("No channels found")))
+                info.channel = None
+            else:
+                for channel in channels:
+                    list_view.append(ChannelListItem(channel))
+                list_view.index = 0
+                info.channel = channels[0]
         self._set_status(f"Showing {len(channels)} channels for {state.config.name}")
 
     def _stop_worker(self) -> None:
@@ -539,15 +759,20 @@ class StreamdeckApp(App[None]):
     def _save_current_config(self) -> None:
         log.debug("Persisting configuration changes")
         save_config(self._config, self._config_path)
+        self._refresh_favorites_view()
 
     def action_focus_search(self) -> None:
         log.debug("Focusing search input")
+        if self._active_tab != "channels":
+            self._set_status("Search is only available in the Channels tab")
+            return
         self.query_one("#search", Input).focus()
 
     def action_clear_search(self) -> None:
         search = self.query_one("#search", Input)
         search.value = ""
-        self._apply_filter("")
+        if self._active_tab == "channels":
+            self._apply_filter("")
 
     def action_new_provider(self) -> None:
         form = self.query_one(ProviderForm)
@@ -608,6 +833,51 @@ class StreamdeckApp(App[None]):
             self._select_provider(self._active_index)
             self._set_status(f"Updated provider {provider.name}")
             log.info("Updated provider %s (previously %s)", provider.name, previous_name)
+
+    def action_play_channel(self) -> None:
+        provider_name, channel, _ = self._get_selected_entry()
+        if provider_name is None or channel is None:
+            self._set_status("No channel selected")
+            return
+        self._set_status(f"Launching player for {channel.name}…")
+        self._start_player_for_channel(provider_name, channel)
+
+    def action_stop_channel(self) -> None:
+        if self._player_process is None:
+            self._set_status("No active player to stop")
+            return
+        self._stop_player_process()
+        self._set_status("Stopped playback")
+        log.info("Stopped player at user request")
+
+    def action_toggle_favorite(self) -> None:
+        provider_name, channel, favorite_entry = self._get_selected_entry()
+        if self._active_tab == "channels":
+            if provider_name is None or channel is None:
+                self._set_status("No channel selected")
+                return
+            existing = self._config.find_favorite(provider_name, channel.url)
+            if existing:
+                self._config.remove_favorite(provider_name, channel.url)
+                self._set_status(f"Removed {channel.name} from favorites")
+            else:
+                favorite = FavoriteChannel(
+                    provider=provider_name,
+                    channel_name=channel.name,
+                    channel_url=channel.url,
+                    group=channel.group,
+                    logo=channel.logo,
+                )
+                self._config.add_favorite(favorite)
+                self._set_status(f"Added {channel.name} to favorites")
+            self._save_current_config()
+        else:
+            if favorite_entry is None:
+                self._set_status("No favorite selected")
+                return
+            self._config.remove_favorite(favorite_entry.provider, favorite_entry.channel_url)
+            self._set_status(f"Removed {favorite_entry.channel_name} from favorites")
+            self._save_current_config()
 
     def action_delete_provider(self) -> None:
         if self._active_index is None or not self._states:
@@ -707,6 +977,26 @@ class StreamdeckApp(App[None]):
         self._set_status("Form reset")
         log.debug("Provider form reset")
 
+    @on(Button.Pressed, "#channel-play")
+    def _on_channel_play(self, _: Button.Pressed) -> None:
+        self.action_play_channel()
+
+    @on(Button.Pressed, "#channel-stop")
+    def _on_channel_stop(self, _: Button.Pressed) -> None:
+        self.action_stop_channel()
+
+    @on(Button.Pressed, "#channel-favorite")
+    def _on_channel_favorite(self, _: Button.Pressed) -> None:
+        self.action_toggle_favorite()
+
+    @on(Button.Pressed, "#tab-channels")
+    def _on_tab_channels(self, _: Button.Pressed) -> None:
+        self._set_active_tab("channels")
+
+    @on(Button.Pressed, "#tab-favorites")
+    def _on_tab_favorites(self, _: Button.Pressed) -> None:
+        self._set_active_tab("favorites")
+
     @on(ListView.Highlighted, "#provider-list")
     def _on_provider_highlighted(self, event: ListView.Highlighted) -> None:
         index = event.list_view.index
@@ -729,6 +1019,8 @@ class StreamdeckApp(App[None]):
         item = event.item
         if isinstance(item, ChannelListItem):
             info.channel = item.channel
+        elif isinstance(item, FavoriteListItem):
+            info.channel = self._favorite_to_channel(item.favorite)
         else:
             info.channel = None
         log.debug("Channel highlighted: %s", getattr(info.channel, "name", None))

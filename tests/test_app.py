@@ -32,6 +32,35 @@ class DummyLogger:
         pass
 
 
+def test_tabbed_layout_and_log_viewer() -> None:
+    """The main application should expose the tabbed UI and surface log messages."""
+
+    from textual.widgets import TabPane, TabbedContent
+
+    from streamdeck_tui.app import LogViewer, StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.logging_utils import get_logger
+
+    provider = ProviderConfig(name="Test", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+
+    async def run_app() -> None:
+        async with app.run_test() as pilot:
+            tabbed = app.query_one("#main-tabs", TabbedContent)
+            pane_ids = {pane.id for pane in tabbed.query(TabPane)}
+            assert {"providers-tab", "channels-tab", "favorites-tab", "logs-tab"} <= pane_ids
+
+            viewer = app.query_one(LogViewer)
+            logger = get_logger("tests.tabbed")
+            logger.info("Hello from tests")
+            await pilot.pause()
+
+            messages = viewer.get_messages()
+            assert any("Hello from tests" in message for message in messages)
+
+    asyncio.run(run_app())
+
+
 def test_refresh_provider_list_handles_none_previous_index(monkeypatch) -> None:
     """Refreshing the provider list should not compare None indexes."""
 
@@ -306,23 +335,108 @@ def test_fetch_provider_error_on_app_thread(monkeypatch) -> None:
     assert app._worker is None
 
 
-def test_log_messages_forward_to_viewer() -> None:
-    """Log records emitted after mount should appear in the UI viewer."""
-
-    import logging
+def test_toggle_favorite_updates_config(monkeypatch) -> None:
+    """Toggling favorites should add and remove entries from the configuration."""
 
     from streamdeck_tui.app import StreamdeckApp
-    from streamdeck_tui.config import AppConfig
-    from streamdeck_tui.log_viewer import LogViewer
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel
 
-    app = StreamdeckApp(AppConfig(providers=[]))
+    provider = ProviderConfig(name="Demo", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+    state = app._states[0]
+    channel = Channel(name="Demo Channel", url="http://example.com/stream")
+    state.channels = [channel]
+    app.filtered_channels = [channel]
+    app._active_index = 0
+    app._active_tab = "channels"
 
-    async def _exercise() -> None:
-        async with app.run_test() as pilot:
-            logger = logging.getLogger("streamdeck_tui.tests")
-            logger.info("viewer smoke test")
-            await pilot.pause()
-            viewer = app.query_one(LogViewer)
-            assert any("viewer smoke test" in line for line in viewer.lines)
+    statuses: list[str] = []
+    monkeypatch.setattr(StreamdeckApp, "_set_status", lambda self, message: statuses.append(message), raising=False)
 
-    asyncio.run(_exercise())
+    dummy_list = type("DummyList", (), {"index": 0})()
+    dummy_info = type("DummyInfo", (), {"channel": None})()
+    dummy_search = type("DummySearch", (), {"value": ""})()
+
+    def fake_query_one(self, selector: str, expected_type=None):
+        if selector == "#channel-list":
+            return dummy_list
+        if selector == "ChannelInfo":
+            return dummy_info
+        if selector == "#search":
+            return dummy_search
+        raise AssertionError(f"Unexpected selector: {selector}")
+
+    monkeypatch.setattr(StreamdeckApp, "query_one", fake_query_one, raising=False)
+
+    refresh_calls: list[bool] = []
+    monkeypatch.setattr(StreamdeckApp, "_refresh_favorites_view", lambda self: refresh_calls.append(True), raising=False)
+
+    saved: list[bool] = []
+
+    def fake_save_config(config, path):  # pragma: no cover - trivial stub
+        saved.append(True)
+
+    monkeypatch.setattr("streamdeck_tui.app.save_config", fake_save_config, raising=False)
+
+    app.action_toggle_favorite()
+
+    assert len(app._config.favorites) == 1
+    assert app._config.favorites[0].channel_url == channel.url
+    assert saved
+    assert refresh_calls
+    assert any("Added" in status for status in statuses)
+
+    saved.clear()
+    refresh_calls.clear()
+    app.action_toggle_favorite()
+
+    assert app._config.favorites == []
+    assert saved
+    assert refresh_calls
+    assert any("Removed" in status for status in statuses)
+
+
+def test_action_play_channel_handles_launch_failure(monkeypatch) -> None:
+    """Failures launching the player should update the status and not track a process."""
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel
+
+    provider = ProviderConfig(name="Demo", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+    state = app._states[0]
+    channel = Channel(name="Demo Channel", url="http://example.com/stream")
+    state.channels = [channel]
+    app.filtered_channels = [channel]
+    app._active_index = 0
+    app._active_tab = "channels"
+
+    statuses: list[str] = []
+    monkeypatch.setattr(StreamdeckApp, "_set_status", lambda self, message: statuses.append(message), raising=False)
+
+    dummy_list = type("DummyList", (), {"index": 0})()
+    dummy_info = type("DummyInfo", (), {"channel": None})()
+    dummy_search = type("DummySearch", (), {"value": ""})()
+
+    def fake_query_one(self, selector: str, expected_type=None):
+        if selector == "#channel-list":
+            return dummy_list
+        if selector == "ChannelInfo":
+            return dummy_info
+        if selector == "#search":
+            return dummy_search
+        raise AssertionError(f"Unexpected selector: {selector}")
+
+    monkeypatch.setattr(StreamdeckApp, "query_one", fake_query_one, raising=False)
+
+    async def failing_launch(_: Channel):  # pragma: no cover - trivial async stub
+        raise RuntimeError("player failed")
+
+    monkeypatch.setattr("streamdeck_tui.app.launch_player", failing_launch, raising=False)
+
+    app.action_play_channel()
+
+    assert app._player_process is None
+    assert any("Failed to launch player" in status for status in statuses)
