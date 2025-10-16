@@ -11,9 +11,10 @@ if __name__ == "__main__" and __package__ is None:
 
 import asyncio
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, List, Optional
+from typing import Callable, Iterable, List, Optional
 
 try:
     from textual import on
@@ -32,6 +33,8 @@ try:
         ListItem,
         ListView,
         Static,
+        TabPane,
+        TabbedContent,
     )
 except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
     raise ModuleNotFoundError(
@@ -40,7 +43,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
     ) from exc
 
 from .config import AppConfig, ProviderConfig, CONFIG_PATH, save_config
-from .logging_utils import get_logger
+from .logging_utils import get_logger, register_log_viewer
 from .playlist import Channel, filter_channels, load_playlist
 from .providers import ConnectionStatus, fetch_connection_status
 
@@ -120,6 +123,47 @@ class StatusBar(Static):
         self.update(status)
 
 
+class LogViewer(Static):
+    """Widget that displays recent log messages from the application."""
+
+    def __init__(self, *args, max_lines: int = 200, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._messages: deque[str] = deque(maxlen=max_lines)
+
+    def on_mount(self) -> None:  # pragma: no cover - exercised via integration test
+        register_log_viewer(self)
+        if not self._messages:
+            self.update("No log messages yet.")
+
+    def on_unmount(self) -> None:  # pragma: no cover - defensive cleanup
+        register_log_viewer(None)
+
+    def append_message(self, message: str) -> None:
+        """Append a single log *message* to the buffer and refresh display."""
+
+        self._messages.append(message)
+        self._render()
+
+    def replace_messages(self, messages: Iterable[str]) -> None:
+        """Replace the buffer with *messages* and refresh display."""
+
+        self._messages.clear()
+        for message in messages:
+            self._messages.append(message)
+        self._render()
+
+    def get_messages(self) -> tuple[str, ...]:
+        """Return a snapshot of the buffered messages."""
+
+        return tuple(self._messages)
+
+    def _render(self) -> None:
+        if self._messages:
+            self.update("\n".join(self._messages))
+        else:
+            self.update("No log messages yet.")
+
+
 class ProviderForm(Static):
     """Form used to edit provider configuration."""
 
@@ -185,16 +229,25 @@ class ReloadConfirmation(ModalScreen[bool]):
 # We keep a very small inline stylesheet so the application can always boot
 # without depending on external CSS files.
 _INLINE_DEFAULT_CSS = """
-#layout {
-    layout: horizontal;
+#main-tabs {
     height: 1fr;
-    padding: 1 2;
+}
+
+TabPane {
+    padding: 0;
+}
+
+#providers-pane,
+#channels-pane,
+#favorites-pane,
+#logs-pane {
+    layout: vertical;
+    height: 1fr;
+    padding: 1;
 }
 
 #providers-pane {
-    layout: vertical;
     min-width: 30;
-    padding: 1;
 }
 
 #provider-actions {
@@ -202,18 +255,21 @@ _INLINE_DEFAULT_CSS = """
     padding-top: 1;
 }
 
-#channels-pane {
-    layout: vertical;
-    height: 1fr;
-    padding: 1;
-}
-
-#channel-list {
+#channel-list,
+#favorites-list,
+#log-viewer {
     height: 1fr;
 }
 
-#channel-info {
+#channel-info,
+#favorites-help {
     padding: 1;
+}
+
+#log-viewer {
+    border: heavy $surface;
+    padding: 0 1;
+    overflow-y: auto;
 }
 
 StatusBar {
@@ -266,18 +322,30 @@ class StreamdeckApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="layout"):
-            with Vertical(id="providers-pane"):
-                yield Label("Providers", id="providers-title")
-                yield ListView(id="provider-list")
-                with Horizontal(id="provider-actions"):
-                    yield Button("New", id="provider-new", variant="primary")
-                    yield Button("Delete", id="provider-delete", variant="warning")
-                yield ProviderForm(id="provider-form")
-            with Vertical(id="channels-pane"):
-                yield Input(placeholder="Search channels…", id="search")
-                yield ListView(id="channel-list")
-                yield ChannelInfo(id="channel-info")
+        with TabbedContent(id="main-tabs"):
+            with TabPane("Providers", id="providers-tab"):
+                with Vertical(id="providers-pane"):
+                    yield Label("Providers", id="providers-title")
+                    yield ListView(id="provider-list")
+                    with Horizontal(id="provider-actions"):
+                        yield Button("New", id="provider-new", variant="primary")
+                        yield Button("Delete", id="provider-delete", variant="warning")
+                    yield ProviderForm(id="provider-form")
+            with TabPane("Channel browser", id="channels-tab"):
+                with Vertical(id="channels-pane"):
+                    yield Input(placeholder="Search channels…", id="search")
+                    yield ListView(id="channel-list")
+                    yield ChannelInfo(id="channel-info")
+            with TabPane("Favorites", id="favorites-tab"):
+                with Vertical(id="favorites-pane"):
+                    yield ListView(id="favorites-list")
+                    yield Static(
+                        "Mark channels as favorites to see them listed here.",
+                        id="favorites-help",
+                    )
+            with TabPane("Logs", id="logs-tab"):
+                with Vertical(id="logs-pane"):
+                    yield LogViewer(id="log-viewer")
         yield StatusBar(id="status")
         yield Footer()
 
