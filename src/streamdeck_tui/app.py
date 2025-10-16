@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 if __name__ == "__main__" and __package__ is None:
@@ -15,7 +16,7 @@ import threading
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable, List, Optional
+from typing import Callable, Iterable, List, Optional, Sequence
 
 try:
     from textual import on
@@ -297,6 +298,8 @@ class StreamdeckApp(App[None]):
 
     CSS = DEFAULT_CSS
     CSS_PATH: list[str] = []
+    CHANNEL_RENDER_BATCH_SIZE = 200
+    CHANNEL_RENDER_BATCH_DELAY = 0.001
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("/", "focus_search", "Search"),
@@ -332,6 +335,10 @@ class StreamdeckApp(App[None]):
         self._worker: Optional[Worker] = None
         self._app_thread_id: int = threading.get_ident()
         self._log_viewer: Optional[LogViewer] = None
+        self._channel_render_task: Optional[asyncio.Task[None]] = None
+        self._channel_render_generation: int = 0
+        self._channel_rendered_count: int = 0
+        self._channel_first_batch_size: int = 0
         log.debug("Inline stylesheet active (%d characters)", len(self.CSS))
         log.info(
             "StreamdeckApp initialized with %d provider(s); config path=%s",
@@ -448,6 +455,8 @@ class StreamdeckApp(App[None]):
         if self._active_tab == tab:
             return
         self._active_tab = tab
+        if tab != "channels":
+            self._cancel_channel_render()
         self._update_tab_buttons()
         if tab == "channels":
             try:
@@ -571,6 +580,7 @@ class StreamdeckApp(App[None]):
     def _clear_channels(self, message: str = "No provider selected") -> None:
         self.filtered_channels = []
         self.query_one(ChannelInfo).channel = None
+        self._cancel_channel_render()
         if self._active_tab != "channels":
             return
         list_view = self.query_one("#channel-list", ListView)
@@ -581,6 +591,7 @@ class StreamdeckApp(App[None]):
         log.debug("Applying channel filter: %s", query)
         state = self._current_state()
         info = self.query_one(ChannelInfo)
+        self._cancel_channel_render()
         if state is None:
             info.channel = None
             self.filtered_channels = []
@@ -604,17 +615,143 @@ class StreamdeckApp(App[None]):
         channels = filter_channels(state.channels, query)
         self.filtered_channels = channels
         if self._active_tab == "channels":
-            list_view = self.query_one("#channel-list", ListView)
-            list_view.clear()
             if not channels:
+                list_view = self.query_one("#channel-list", ListView)
+                list_view.clear()
                 list_view.append(ListItem(Label("No channels found")))
                 info.channel = None
             else:
+                self._start_channel_render(channels)
+        self._set_status(f"Showing {len(channels)} channels for {state.config.name}")
+
+    def _start_channel_render(self, channels: Sequence[Channel]) -> None:
+        """Launch an asynchronous renderer for the supplied ``channels``."""
+
+        if not channels:
+            return
+        self._channel_render_generation += 1
+        self._channel_rendered_count = 0
+        self._channel_first_batch_size = 0
+        generation = self._channel_render_generation
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            log.debug("Rendering channels synchronously outside the event loop")
+            list_view = self.query_one("#channel-list", ListView)
+            info = self.query_one(ChannelInfo)
+            batch_context = (
+                list_view.batch_update()
+                if hasattr(list_view, "batch_update")
+                else nullcontext()
+            )
+            with batch_context:
+                list_view.clear()
                 for channel in channels:
                     list_view.append(ChannelListItem(channel))
-                list_view.index = 0
-                info.channel = channels[0]
-        self._set_status(f"Showing {len(channels)} channels for {state.config.name}")
+            list_view.index = 0
+            info.channel = channels[0]
+            self._channel_rendered_count = len(channels)
+            self._channel_first_batch_size = len(channels)
+            return
+        task = loop.create_task(self._render_channel_list(channels, generation))
+        self._channel_render_task = task
+
+        def _finalize_render(completed: asyncio.Task[None]) -> None:
+            if self._channel_render_task is completed:
+                self._channel_render_task = None
+            try:
+                completed.result()
+            except asyncio.CancelledError:  # pragma: no cover - expected cancellation
+                pass
+            except Exception:  # pragma: no cover - logged for diagnostics
+                log.exception("Channel rendering failed")
+
+        task.add_done_callback(_finalize_render)
+
+    def _cancel_channel_render(self) -> None:
+        task = self._channel_render_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._channel_render_task = None
+        self._channel_render_generation += 1
+        self._channel_rendered_count = 0
+        self._channel_first_batch_size = 0
+
+    async def _render_channel_list(
+        self, channels: Sequence[Channel], generation: int
+    ) -> None:
+        """Render ``channels`` to the list view in small batches."""
+
+        list_view = self.query_one("#channel-list", ListView)
+        info = self.query_one(ChannelInfo)
+        clear_event = asyncio.Event()
+
+        def clear_list() -> None:
+            if generation != self._channel_render_generation:
+                clear_event.set()
+                return
+            batch_context = (
+                list_view.batch_update()
+                if hasattr(list_view, "batch_update")
+                else nullcontext()
+            )
+            with batch_context:
+                list_view.clear()
+            info.channel = None
+            self._channel_rendered_count = 0
+            self._channel_first_batch_size = 0
+            clear_event.set()
+
+        self.call_later(clear_list)
+        try:
+            await clear_event.wait()
+        except asyncio.CancelledError:
+            raise
+
+        if generation != self._channel_render_generation:
+            return
+
+        batch_size = self.CHANNEL_RENDER_BATCH_SIZE
+        first_batch = True
+
+        for start in range(0, len(channels), batch_size):
+            batch = channels[start : start + batch_size]
+            batch_event = asyncio.Event()
+
+            def append_batch(batch: Sequence[Channel] = batch) -> None:
+                nonlocal first_batch
+                if generation != self._channel_render_generation:
+                    batch_event.set()
+                    return
+                batch_context = (
+                    list_view.batch_update()
+                    if hasattr(list_view, "batch_update")
+                    else nullcontext()
+                )
+                with batch_context:
+                    for channel in batch:
+                        list_view.append(ChannelListItem(channel))
+                self._channel_rendered_count += len(batch)
+                if first_batch:
+                    self._channel_first_batch_size = len(batch)
+                    list_view.index = 0
+                    info.channel = batch[0]
+                    first_batch = False
+                batch_event.set()
+
+            self.call_later(append_batch)
+            try:
+                await batch_event.wait()
+            except asyncio.CancelledError:
+                raise
+            if generation != self._channel_render_generation:
+                return
+            if start != 0:
+                delay = self.CHANNEL_RENDER_BATCH_DELAY
+                if delay:
+                    await asyncio.sleep(delay)
+                else:
+                    await asyncio.sleep(0)
 
     def _stop_worker(self) -> None:
         if self._worker and not self._worker.is_finished:
