@@ -304,3 +304,25 @@ def test_fetch_provider_error_on_app_thread(monkeypatch) -> None:
     assert state.connection_status is None
     assert state.last_loaded_at is None
     assert app._worker is None
+
+
+def test_log_messages_forward_to_viewer() -> None:
+    """Log records emitted after mount should appear in the UI viewer."""
+
+    import logging
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig
+    from streamdeck_tui.log_viewer import LogViewer
+
+    app = StreamdeckApp(AppConfig(providers=[]))
+
+    async def _exercise() -> None:
+        async with app.run_test() as pilot:
+            logger = logging.getLogger("streamdeck_tui.tests")
+            logger.info("viewer smoke test")
+            await pilot.pause()
+            viewer = app.query_one(LogViewer)
+            assert any("viewer smoke test" in line for line in viewer.lines)
+
+    asyncio.run(_exercise())

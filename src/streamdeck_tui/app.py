@@ -32,6 +32,8 @@ try:
         ListItem,
         ListView,
         Static,
+        TabbedContent,
+        TabPane,
     )
 except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
     raise ModuleNotFoundError(
@@ -40,9 +42,10 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
     ) from exc
 
 from .config import AppConfig, ProviderConfig, CONFIG_PATH, save_config
-from .logging_utils import get_logger
+from .logging_utils import configure_logging, get_logger
 from .playlist import Channel, filter_channels, load_playlist
 from .providers import ConnectionStatus, fetch_connection_status
+from .log_viewer import LogViewer
 
 
 log = get_logger(__name__)
@@ -185,9 +188,14 @@ class ReloadConfirmation(ModalScreen[bool]):
 # We keep a very small inline stylesheet so the application can always boot
 # without depending on external CSS files.
 _INLINE_DEFAULT_CSS = """
-#layout {
-    layout: horizontal;
+#main-tabs {
     height: 1fr;
+}
+
+#providers-tab,
+#channels-tab,
+#favorites-tab,
+#logs-tab {
     padding: 1 2;
 }
 
@@ -205,6 +213,11 @@ _INLINE_DEFAULT_CSS = """
 #channels-pane {
     layout: vertical;
     height: 1fr;
+    padding: 1;
+}
+
+#favorites-placeholder,
+#log-viewer {
     padding: 1;
 }
 
@@ -257,6 +270,7 @@ class StreamdeckApp(App[None]):
         self.filtered_channels: List[Channel] = []
         self._worker: Optional[Worker] = None
         self._app_thread_id: int = threading.get_ident()
+        self._log_viewer: Optional[LogViewer] = None
         log.debug("Inline stylesheet active (%d characters)", len(self.CSS))
         log.info(
             "StreamdeckApp initialized with %d provider(s); config path=%s",
@@ -266,24 +280,34 @@ class StreamdeckApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="layout"):
-            with Vertical(id="providers-pane"):
-                yield Label("Providers", id="providers-title")
-                yield ListView(id="provider-list")
-                with Horizontal(id="provider-actions"):
-                    yield Button("New", id="provider-new", variant="primary")
-                    yield Button("Delete", id="provider-delete", variant="warning")
-                yield ProviderForm(id="provider-form")
-            with Vertical(id="channels-pane"):
-                yield Input(placeholder="Search channels…", id="search")
-                yield ListView(id="channel-list")
-                yield ChannelInfo(id="channel-info")
+        with TabbedContent(id="main-tabs"):
+            with TabPane("Providers", id="providers-tab"):
+                with Vertical(id="providers-pane"):
+                    yield Label("Providers", id="providers-title")
+                    yield ListView(id="provider-list")
+                    with Horizontal(id="provider-actions"):
+                        yield Button("New", id="provider-new", variant="primary")
+                        yield Button("Delete", id="provider-delete", variant="warning")
+                    yield ProviderForm(id="provider-form")
+            with TabPane("Channel browser", id="channels-tab"):
+                with Vertical(id="channels-pane"):
+                    yield Input(placeholder="Search channels…", id="search")
+                    yield ListView(id="channel-list")
+                    yield ChannelInfo(id="channel-info")
+            with TabPane("Favorites", id="favorites-tab"):
+                yield Static("Favorites coming soon", id="favorites-placeholder")
+            with TabPane("Logs", id="logs-tab"):
+                log_viewer = LogViewer(id="log-viewer")
+                self._log_viewer = log_viewer
+                yield log_viewer
         yield StatusBar(id="status")
         yield Footer()
 
     def on_mount(self) -> None:
         log.debug("Application mounted")
         self._app_thread_id = threading.get_ident()
+        if self._log_viewer is not None:
+            configure_logging(log_viewer=self._log_viewer, app=self)
         self._refresh_provider_list()
         if self._states:
             self._select_provider(self._active_index or 0)
