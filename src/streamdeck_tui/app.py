@@ -10,9 +10,10 @@ if __name__ == "__main__" and __package__ is None:
     __package__ = "streamdeck_tui"
 
 import asyncio
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 try:
     from textual import on
@@ -255,6 +256,7 @@ class StreamdeckApp(App[None]):
         )
         self.filtered_channels: List[Channel] = []
         self._worker: Optional[Worker] = None
+        self._app_thread_id: int = threading.get_ident()
         log.debug("Inline stylesheet active (%d characters)", len(self.CSS))
         log.info(
             "StreamdeckApp initialized with %d provider(s); config path=%s",
@@ -281,6 +283,7 @@ class StreamdeckApp(App[None]):
 
     def on_mount(self) -> None:
         log.debug("Application mounted")
+        self._app_thread_id = threading.get_ident()
         self._refresh_provider_list()
         if self._states:
             self._select_provider(self._active_index or 0)
@@ -373,6 +376,13 @@ class StreamdeckApp(App[None]):
         if self._worker and not self._worker.is_finished:
             self._worker.cancel()
         self._worker = None
+
+    def _call_on_app_thread(self, callback: Callable[..., None], *args) -> None:
+        if threading.get_ident() == self._app_thread_id:
+            callback(*args)
+        else:
+            self.call_from_thread(callback, *args)
+
     def _worker_finished(self) -> None:
         self._worker = None
 
@@ -412,20 +422,20 @@ class StreamdeckApp(App[None]):
             channels = await asyncio.to_thread(load_playlist, state.config.playlist_url)
         except Exception as exc:  # pragma: no cover - network failures depend on environment
             log.exception("Error loading playlist for %s", state.config.name)
-            self.call_from_thread(self._handle_provider_error, state, str(exc))
+            self._call_on_app_thread(self._handle_provider_error, state, str(exc))
         else:
-            self.call_from_thread(self._handle_channels_loaded, state, channels)
+            self._call_on_app_thread(self._handle_channels_loaded, state, channels)
             if state.config.api_url:
                 try:
                     status = await fetch_connection_status(state.config.api_url)
                 except Exception as exc:  # pragma: no cover - network failures depend on environment
                     log.exception("Error fetching status for %s", state.config.name)
-                    self.call_from_thread(self._handle_status_error, state, str(exc))
+                    self._call_on_app_thread(self._handle_status_error, state, str(exc))
                 else:
-                    self.call_from_thread(self._handle_status_success, state, status)
+                    self._call_on_app_thread(self._handle_status_success, state, status)
         finally:
             log.debug("Worker finished for provider %s", state.config.name)
-            self.call_from_thread(self._worker_finished)
+            self._call_on_app_thread(self._worker_finished)
 
     def _handle_provider_error(self, state: ProviderState, message: str) -> None:
         state.loading = False
