@@ -41,7 +41,7 @@ def test_parse_playlist_requires_metadata_for_stream_url():
         parse_playlist(["#EXTM3U", "http://example.com"])
 
 
-def test_parse_playlist_recovers_from_unterminated_attribute():
+def test_parse_playlist_recovers_from_unterminated_attribute(monkeypatch):
     malformed_playlist = [
         "#EXTM3U",
         '#EXTINF:-1 tvg-id="channel1" group-title="News" tvg-logo="http://logo,Channel One',
@@ -50,29 +50,14 @@ def test_parse_playlist_recovers_from_unterminated_attribute():
         "http://example.com/stream2",
     ]
 
-    class _CapturingHandler(logging.Handler):
-        def __init__(self) -> None:
-            super().__init__(level=logging.NOTSET)
-            self.records: list[logging.LogRecord] = []
+    warnings: list[str] = []
 
-        def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - simple
-            self.records.append(record)
+    def capture_warning(message: str, *args, **kwargs) -> None:
+        warnings.append(message % args)
 
-    logger = logging.getLogger("streamdeck_tui.playlist")
-    handler = _CapturingHandler()
-    handler.setLevel(logging.WARNING)
-    logger.addHandler(handler)
-    previous_level = logger.level
-    logger.setLevel(min(previous_level, logging.WARNING))
-    try:
-        channels = parse_playlist(malformed_playlist)
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(previous_level)
-        handler.close()
+    monkeypatch.setattr("streamdeck_tui.playlist.log.warning", capture_warning)
+
+    channels = parse_playlist(malformed_playlist)
 
     assert [channel.name for channel in channels] == ["Channel One", "Channel Two"]
-    assert any(
-        "Unterminated attribute value" in record.getMessage()
-        for record in handler.records
-    )
+    assert any("Unterminated attribute value" in message for message in warnings)
