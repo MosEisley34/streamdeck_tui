@@ -217,6 +217,81 @@ def test_action_reload_provider_requires_confirmation(monkeypatch) -> None:
     assert any("Reload confirmed" in message for message in dummy_logger.messages)
 
 
+def test_apply_filter_streams_channel_batches() -> None:
+    """Rendering large channel lists should stream results in batches."""
+
+    import types
+    from contextlib import nullcontext
+
+    from streamdeck_tui.app import ChannelInfo, StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel
+
+    provider = ProviderConfig(name="Bulk", playlist_url="http://example.com")
+    channels = [
+        Channel(name=f"Channel {index}", url=f"http://example.com/{index}")
+        for index in range(6000)
+    ]
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+
+    class DummyListView:
+        def __init__(self) -> None:
+            self.items: list[object] = []
+            self.index: int | None = None
+
+        def clear(self) -> None:
+            self.items.clear()
+
+        def append(self, item: object) -> None:
+            self.items.append(item)
+
+        def batch_update(self):
+            return nullcontext()
+
+    class DummyChannelInfo:
+        def __init__(self) -> None:
+            self.channel: Channel | None = None
+
+    list_view = DummyListView()
+    info = DummyChannelInfo()
+
+    def fake_query_one(self, selector, expected_type=None):
+        if selector == "#channel-list":
+            return list_view
+        if selector in {ChannelInfo, info.__class__}:
+            return info
+        raise AssertionError(f"Unexpected selector: {selector!r}")
+
+    def fake_call_later(self, callback, *args, **kwargs):
+        asyncio.get_running_loop().call_soon(callback, *args, **kwargs)
+        return True
+
+    app.query_one = types.MethodType(fake_query_one, app)
+    app.call_later = types.MethodType(fake_call_later, app)
+    app.CHANNEL_RENDER_BATCH_DELAY = 0.01
+
+    async def run_app() -> None:
+        state = app._states[0]
+        state.channels = channels
+        app._channel_render_generation += 1
+        generation = app._channel_render_generation
+        render_task = asyncio.create_task(
+            app._render_channel_list(channels, generation)
+        )
+
+        await asyncio.sleep(0.05)
+        assert app._channel_first_batch_size == app.CHANNEL_RENDER_BATCH_SIZE
+        assert app._channel_rendered_count >= app._channel_first_batch_size
+        assert app._channel_rendered_count < len(channels)
+        assert info.channel is channels[0]
+        assert not render_task.done()
+
+        await asyncio.wait_for(render_task, timeout=5.0)
+        assert app._channel_rendered_count == len(channels)
+
+    asyncio.run(run_app())
+
+
 def test_action_reload_provider_without_recent_load(monkeypatch) -> None:
     """Manual reloads after the guard window should proceed immediately."""
 
