@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-from importlib import resources
 from pathlib import Path
 
 if __name__ == "__main__" and __package__ is None:
@@ -130,9 +129,8 @@ class ProviderForm(Static):
         self.query_one("#provider-name", Input).focus()
 
 
-# We keep a very small inline stylesheet so the application can always boot even
-# if the packaged CSS resource is missing or contains declarations that the
-# installed version of Textual can't parse.
+# We keep a very small inline stylesheet so the application can always boot
+# without depending on external CSS files.
 _INLINE_DEFAULT_CSS = """
 #layout {
     layout: horizontal;
@@ -171,35 +169,7 @@ StatusBar {
 """
 
 
-def _stylesheet_supported(css_text: str) -> bool:
-    """Return ``True`` if the stylesheet only contains safe declarations."""
-
-    if "$" in css_text:
-        return False
-
-    unsupported_properties = ("gap:",)
-    return not any(prop in css_text for prop in unsupported_properties)
-
-
-def _load_default_css() -> str:
-    """Load the packaged stylesheet, falling back to the inline copy."""
-
-    try:
-        css_path = resources.files(__package__).joinpath("streamdeck.css")
-        css_text = css_path.read_text(encoding="utf-8")
-        if not _stylesheet_supported(css_text):
-            log.warning(
-                "Packaged stylesheet contains unsupported declarations; "
-                "falling back to inline CSS copy"
-            )
-            return _INLINE_DEFAULT_CSS
-        return css_text
-    except FileNotFoundError:  # pragma: no cover - defensive fallback
-        log.warning("Packaged stylesheet missing; falling back to inline CSS copy")
-        return _INLINE_DEFAULT_CSS
-
-
-DEFAULT_CSS = _load_default_css()
+DEFAULT_CSS = _INLINE_DEFAULT_CSS
 
 
 class StreamdeckApp(App[None]):
