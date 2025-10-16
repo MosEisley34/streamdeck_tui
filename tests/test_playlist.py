@@ -46,8 +46,10 @@ def test_parse_playlist_recovers_from_unterminated_attribute(monkeypatch):
         "#EXTM3U",
         '#EXTINF:-1 tvg-id="channel1" group-title="News" tvg-logo="http://logo,Channel One',
         "http://example.com/stream1",
-        '#EXTINF:-1 tvg-id="channel2" group-title="Sports",Channel Two',
+        '#EXTINF:-1 tvg-id="channel2" group-title="Sports" tvg-logo="http://logo2 tvg-name="Channel Two",Channel Two',
         "http://example.com/stream2",
+        '#EXTINF:-1 tvg-id="channel3" group-title="Movies",Channel Three',
+        "http://example.com/stream3",
     ]
 
     warnings: list[str] = []
@@ -59,5 +61,19 @@ def test_parse_playlist_recovers_from_unterminated_attribute(monkeypatch):
 
     channels = parse_playlist(malformed_playlist)
 
-    assert [channel.name for channel in channels] == ["Channel One", "Channel Two"]
-    assert any("Unterminated attribute value" in message for message in warnings)
+    assert [channel.name for channel in channels] == [
+        "Channel One",
+        "Channel Two",
+        "Channel Three",
+    ]
+    unterminated_messages = [
+        message for message in warnings if "Unterminated attribute value" in message
+    ]
+    assert len(unterminated_messages) == 2
+
+    second_channel = channels[1]
+    assert (
+        second_channel.raw_attributes["tvg-logo"]
+        == 'http://logo2 tvg-name=Channel Two"'
+    )
+    assert "tvg-name" not in second_channel.raw_attributes
