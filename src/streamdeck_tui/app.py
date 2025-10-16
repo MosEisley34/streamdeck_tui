@@ -43,7 +43,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
         "Install dependencies with 'pip install -e .[dev]' or 'pip install streamdeck-tui'."
     ) from exc
 
-from .config import AppConfig, ProviderConfig, CONFIG_PATH, save_config
+from .config import AppConfig, FavoriteChannel, ProviderConfig, CONFIG_PATH, save_config
 from .logging_utils import get_logger, register_log_viewer
 from .playlist import Channel, filter_channels, load_playlist
 from .providers import ConnectionStatus, fetch_connection_status
