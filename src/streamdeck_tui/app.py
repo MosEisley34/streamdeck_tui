@@ -102,9 +102,9 @@ class ProviderForm(Static):
         yield Label("Provider name")
         yield Input(placeholder="Name", id="provider-name")
         yield Label("Playlist URL")
-        yield Input(placeholder="https://example.com/playlist.m3u", id="provider-playlist")
+        yield Input(placeholder="Playlist URL", id="provider-playlist")
         yield Label("API URL (optional)")
-        yield Input(placeholder="https://example.com/status", id="provider-api")
+        yield Input(placeholder="Status API URL (optional)", id="provider-api")
         with Horizontal(id="form-buttons"):
             yield Button("Reset", id="provider-reset")
             yield Button("Save", id="provider-save", variant="success")
@@ -562,13 +562,14 @@ class StreamdeckApp(App[None]):
 
     @on(ListView.Highlighted, "#provider-list")
     def _on_provider_highlighted(self, event: ListView.Highlighted) -> None:
-        if event.index is None:
+        index = event.list_view.index
+        if index is None:
             return
-        if event.index == self._active_index:
+        if index == self._active_index:
             return
-        if self._states and 0 <= event.index < len(self._states):
-            self._select_provider(event.index)
-            log.debug("Provider list highlighted index %s", event.index)
+        if self._states and 0 <= index < len(self._states):
+            self._select_provider(index)
+            log.debug("Provider list highlighted index %s", index)
 
     @on(Input.Changed, "#search")
     def on_search_changed(self, event: Input.Changed) -> None:

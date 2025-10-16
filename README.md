@@ -72,8 +72,8 @@ under a top-level `providers` key:
 ```yaml
 providers:
   - name: Example IPTV
-    playlist_url: https://example.com/playlist.m3u
-    api_url: https://example.com/status  # optional JSON endpoint with connection counts
+    playlist_url: YOUR_PLAYLIST_URL
+    api_url: YOUR_STATUS_ENDPOINT  # optional JSON endpoint with connection counts
 ```
 
 Each provider entry requires a unique `name` and `playlist_url`. The optional `api_url` should return JSON containing
