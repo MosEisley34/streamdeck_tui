@@ -1,9 +1,11 @@
 """Utilities for parsing IPTV playlists."""
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Mapping, Optional, Sequence
 from urllib import request
 
 from .logging_utils import get_logger
@@ -20,7 +22,7 @@ class Channel:
     group: Optional[str] = None
     logo: Optional[str] = None
     raw_attributes: dict[str, str] = field(default_factory=dict)
-    _search_blob: str = field(init=False, repr=False)
+    _tokens: frozenset[str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         parts = [
@@ -28,17 +30,23 @@ class Channel:
             self.group or "",
             self.raw_attributes.get("tvg-id") or "",
         ]
-        self._search_blob = " ".join(part.lower() for part in parts if part)
+        token_set: set[str] = set()
+        for part in parts:
+            if part:
+                token_set.update(normalize_tokens(part))
+        self._tokens = frozenset(token_set)
 
     def matches_tokens(self, tokens: Sequence[str]) -> bool:
         """Return True if all tokens match the precomputed search blob."""
 
-        return all(token in self._search_blob for token in tokens)
+        if not tokens:
+            return True
+        return all(token in self._tokens for token in tokens)
 
     def matches(self, query: str) -> bool:
         """Return True if the channel matches the search query."""
 
-        return self.matches_tokens(query.lower().split())
+        return self.matches_tokens(normalize_tokens(query))
 
 
 class PlaylistError(RuntimeError):
@@ -114,6 +122,35 @@ def _parse_extinf(line: str) -> tuple[dict[str, str], str]:
     return attributes, name.strip()
 
 
+def normalize_tokens(text: str) -> list[str]:
+    """Normalize ``text`` into a list of unique, lowercase search tokens."""
+
+    if not text:
+        return []
+    normalized = unicodedata.normalize("NFKD", text)
+    without_diacritics = "".join(
+        char for char in normalized if not unicodedata.combining(char)
+    )
+    raw_tokens = re.findall(r"\w+", without_diacritics.lower())
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for token in raw_tokens:
+        if token and token not in seen:
+            seen.add(token)
+            tokens.append(token)
+    return tokens
+
+
+def build_search_index(channels: Sequence[Channel]) -> dict[str, set[int]]:
+    """Construct an inverted index mapping tokens to channel positions."""
+
+    index: dict[str, set[int]] = {}
+    for idx, channel in enumerate(channels):
+        for token in channel._tokens:
+            index.setdefault(token, set()).add(idx)
+    return index
+
+
 def parse_playlist(lines: Iterable[str]) -> List[Channel]:
     """Parse playlist lines into a list of :class:`Channel` objects."""
 
@@ -176,16 +213,40 @@ def load_playlist(source: str | Path) -> List[Channel]:
     return parse_playlist(content.splitlines())
 
 
-def filter_channels(channels: Iterable[Channel], query: str) -> List[Channel]:
+def filter_channels(
+    channels: Sequence[Channel],
+    query: str,
+    search_index: Optional[Mapping[str, set[int]]] = None,
+) -> List[Channel]:
     """Return channels matching the given search query."""
 
-    query = query.strip()
-    if not query:
+    tokens = normalize_tokens(query.strip())
+    if not tokens:
         results = list(channels)
         log.debug("Filter query empty; returning %d channels", len(results))
         return results
-    tokens = query.lower().split()
-    results = [channel for channel in channels if channel.matches_tokens(tokens)]
+
+    candidate_ids: Optional[set[int]] = None
+    if search_index is not None:
+        for token in tokens:
+            postings = search_index.get(token)
+            if not postings:
+                candidate_ids = set()
+                break
+            if candidate_ids is None:
+                candidate_ids = set(postings)
+            else:
+                candidate_ids &= postings
+            if not candidate_ids:
+                break
+
+    results: List[Channel] = []
+    for idx, channel in enumerate(channels):
+        if candidate_ids is not None and idx not in candidate_ids:
+            continue
+        if channel.matches_tokens(tokens):
+            results.append(channel)
+
     log.debug(
         "Filter query '%s' matched %d channel(s)",
         query,
@@ -199,5 +260,7 @@ __all__ = [
     "PlaylistError",
     "parse_playlist",
     "load_playlist",
+    "normalize_tokens",
+    "build_search_index",
     "filter_channels",
 ]

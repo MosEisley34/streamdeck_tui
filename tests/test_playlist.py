@@ -4,7 +4,14 @@ from typing import Sequence
 
 import pytest
 
-from streamdeck_tui.playlist import Channel, PlaylistError, filter_channels, parse_playlist
+from streamdeck_tui.playlist import (
+    Channel,
+    PlaylistError,
+    build_search_index,
+    filter_channels,
+    normalize_tokens,
+    parse_playlist,
+)
 
 
 SAMPLE_PLAYLIST = """#EXTM3U
@@ -39,7 +46,7 @@ def test_filter_channels_matches_multiple_fields():
     assert [channel.name for channel in result] == ["Channel Two"]
 
 
-def test_filter_channels_reuses_lowercased_tokens(monkeypatch):
+def test_filter_channels_reuses_normalized_tokens(monkeypatch):
     channels = parse_playlist(SAMPLE_PLAYLIST)
     captured_tokens: list[Sequence[str]] = []
     original = Channel.matches_tokens
@@ -57,6 +64,30 @@ def test_filter_channels_reuses_lowercased_tokens(monkeypatch):
     assert all(token == token.lower() for tokens in captured_tokens for token in tokens)
     first_tokens = captured_tokens[0]
     assert all(tokens is first_tokens for tokens in captured_tokens)
+
+
+def test_normalize_tokens_handles_punctuation_and_diacritics():
+    tokens = normalize_tokens("ESPN 1080 / 1080 ESPN")
+    assert tokens == ["espn", "1080"]
+    assert normalize_tokens("Café-Éclair") == ["cafe", "eclair"]
+
+
+def test_filter_channels_uses_inverted_index(monkeypatch):
+    channels = parse_playlist(SAMPLE_PLAYLIST)
+    index = build_search_index(channels)
+    captured: list[str] = []
+    original = Channel.matches_tokens
+
+    def spy(self: Channel, tokens):  # type: ignore[override]
+        captured.append(self.name)
+        return original(self, tokens)
+
+    monkeypatch.setattr(Channel, "matches_tokens", spy)
+
+    result = filter_channels(channels, "Sports", index)
+
+    assert [channel.name for channel in result] == ["Channel Two"]
+    assert captured == ["Channel Two"]
 
 
 def test_parse_playlist_requires_metadata_for_stream_url():

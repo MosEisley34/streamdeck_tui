@@ -46,7 +46,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
 
 from .config import AppConfig, FavoriteChannel, ProviderConfig, CONFIG_PATH, save_config
 from .logging_utils import get_logger, register_log_viewer
-from .playlist import Channel, filter_channels, load_playlist
+from .playlist import Channel, build_search_index, filter_channels, load_playlist
 from .providers import ConnectionStatus, fetch_connection_status
 from .log_viewer import LogViewer
 
@@ -85,6 +85,7 @@ class ProviderState:
     last_error: Optional[str] = None
     loading: bool = False
     last_loaded_at: Optional[datetime] = None
+    search_index: Optional[dict[str, set[int]]] = None
 
 
 class ChannelListItem(ListItem):
@@ -612,7 +613,7 @@ class StreamdeckApp(App[None]):
                 list_view.clear()
                 list_view.append(ListItem(Label(message)))
             return
-        channels = filter_channels(state.channels, query)
+        channels = filter_channels(state.channels, query, state.search_index)
         self.filtered_channels = channels
         if self._active_tab == "channels":
             if not channels:
@@ -822,6 +823,7 @@ class StreamdeckApp(App[None]):
         state.loading = False
         state.last_error = message
         state.channels = None
+        state.search_index = None
         state.last_loaded_at = None
         if state is self._current_state():
             self._clear_channels(f"Failed to load channels: {message}")
@@ -833,6 +835,7 @@ class StreamdeckApp(App[None]):
         state.loading = False
         state.last_error = None
         state.channels = channels
+        state.search_index = build_search_index(channels)
         state.last_loaded_at = datetime.now(tz=timezone.utc)
         log.info(
             "Loaded %d channels for provider %s",
