@@ -121,8 +121,9 @@ make install
 ```
 
 or, if you prefer not to install the console script, execute the module directly
-with `python -m streamdeck_tui`. The application no longer loads external
-stylesheets, so once the editable install is in place the error will disappear.
+with `python -m streamdeck_tui`. The current release bundles a Textual-compatible
+stylesheet, but older installations shipped a version that relied on unsupported
+properties. After reinstalling you will receive the updated CSS automatically.
 
 ## Collecting logs
 

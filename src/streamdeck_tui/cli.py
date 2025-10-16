@@ -39,13 +39,19 @@ def warn_if_legacy_stylesheet() -> None:
     """Log guidance if an old packaged stylesheet is still present."""
 
     css_resource = resources.files("streamdeck_tui").joinpath("streamdeck.css")
-    if css_resource.is_file():
+    try:
+        css_text = css_resource.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+
+    legacy_tokens = ("gap:", "$surface", "$accent")
+    if any(token in css_text for token in legacy_tokens):
         log.warning(
-            "Detected legacy stylesheet at %s. This file is no longer used and"
-            " belongs to an older installation. Reinstall the project with"
-            " 'pip install -e .' (or run 'make install') to refresh the"
-            " console script, or uninstall the previous package with"
-            " 'pip uninstall streamdeck-tui'.",
+            "Detected legacy stylesheet at %s. This file belongs to an older"
+            " installation. Reinstall the project with 'pip install -e .'"
+            " (or run 'make install') to refresh the console script, or"
+            " uninstall the previous package with 'pip uninstall"
+            " streamdeck-tui'.",
             css_resource,
         )
 
