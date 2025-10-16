@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Sequence
 
 import pytest
 
@@ -34,6 +35,28 @@ def test_filter_channels_matches_multiple_fields():
     assert [channel.name for channel in result] == ["Channel Two"]
     result = filter_channels(channels, "channel2")
     assert [channel.name for channel in result] == ["Channel Two"]
+    result = filter_channels(channels, "sPoRtS")
+    assert [channel.name for channel in result] == ["Channel Two"]
+
+
+def test_filter_channels_reuses_lowercased_tokens(monkeypatch):
+    channels = parse_playlist(SAMPLE_PLAYLIST)
+    captured_tokens: list[Sequence[str]] = []
+    original = Channel.matches_tokens
+
+    def spy(self: Channel, tokens):  # type: ignore[override]
+        captured_tokens.append(tokens)
+        return original(self, tokens)
+
+    monkeypatch.setattr(Channel, "matches_tokens", spy)
+
+    result = filter_channels(channels, "Sports channel2")
+
+    assert [channel.name for channel in result] == ["Channel Two"]
+    assert captured_tokens
+    assert all(token == token.lower() for tokens in captured_tokens for token in tokens)
+    first_tokens = captured_tokens[0]
+    assert all(tokens is first_tokens for tokens in captured_tokens)
 
 
 def test_parse_playlist_requires_metadata_for_stream_url():
