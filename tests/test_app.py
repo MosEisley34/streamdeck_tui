@@ -32,6 +32,35 @@ class DummyLogger:
         pass
 
 
+def test_tabbed_layout_and_log_viewer() -> None:
+    """The main application should expose the tabbed UI and surface log messages."""
+
+    from textual.widgets import TabPane, TabbedContent
+
+    from streamdeck_tui.app import LogViewer, StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.logging_utils import get_logger
+
+    provider = ProviderConfig(name="Test", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+
+    async def run_app() -> None:
+        async with app.run_test() as pilot:
+            tabbed = app.query_one("#main-tabs", TabbedContent)
+            pane_ids = {pane.id for pane in tabbed.query(TabPane)}
+            assert {"providers-tab", "channels-tab", "favorites-tab", "logs-tab"} <= pane_ids
+
+            viewer = app.query_one(LogViewer)
+            logger = get_logger("tests.tabbed")
+            logger.info("Hello from tests")
+            await pilot.pause()
+
+            messages = viewer.get_messages()
+            assert any("Hello from tests" in message for message in messages)
+
+    asyncio.run(run_app())
+
+
 def test_refresh_provider_list_handles_none_previous_index(monkeypatch) -> None:
     """Refreshing the provider list should not compare None indexes."""
 
