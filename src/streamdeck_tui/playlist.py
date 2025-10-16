@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Sequence
 from urllib import request
 
 from .logging_utils import get_logger
@@ -20,22 +20,25 @@ class Channel:
     group: Optional[str] = None
     logo: Optional[str] = None
     raw_attributes: dict[str, str] = field(default_factory=dict)
+    _search_blob: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        parts = [
+            self.name,
+            self.group or "",
+            self.raw_attributes.get("tvg-id") or "",
+        ]
+        self._search_blob = " ".join(part.lower() for part in parts if part)
+
+    def matches_tokens(self, tokens: Sequence[str]) -> bool:
+        """Return True if all tokens match the precomputed search blob."""
+
+        return all(token in self._search_blob for token in tokens)
 
     def matches(self, query: str) -> bool:
         """Return True if the channel matches the search query."""
 
-        tokens = query.lower().split()
-        haystack = " ".join(
-            filter(
-                None,
-                [
-                    self.name.lower(),
-                    (self.group or "").lower(),
-                    (self.raw_attributes.get("tvg-id") or "").lower(),
-                ],
-            )
-        )
-        return all(token in haystack for token in tokens)
+        return self.matches_tokens(query.lower().split())
 
 
 class PlaylistError(RuntimeError):
@@ -181,7 +184,8 @@ def filter_channels(channels: Iterable[Channel], query: str) -> List[Channel]:
         results = list(channels)
         log.debug("Filter query empty; returning %d channels", len(results))
         return results
-    results = [channel for channel in channels if channel.matches(query)]
+    tokens = query.lower().split()
+    results = [channel for channel in channels if channel.matches_tokens(tokens)]
     log.debug(
         "Filter query '%s' matched %d channel(s)",
         query,
