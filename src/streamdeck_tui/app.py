@@ -11,6 +11,7 @@ if __name__ == "__main__" and __package__ is None:
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 try:
@@ -20,6 +21,7 @@ try:
     from textual.containers import Horizontal, Vertical
     from textual.reactive import reactive
     from textual.worker import Worker
+    from textual.screen import ModalScreen
     from textual.widgets import (
         Button,
         Footer,
@@ -45,6 +47,27 @@ from .providers import ConnectionStatus, fetch_connection_status
 log = get_logger(__name__)
 
 
+RECENT_RELOAD_THRESHOLD = timedelta(hours=6)
+
+
+def _format_timedelta(delta: timedelta) -> str:
+    """Return a human-friendly description of ``delta``."""
+
+    seconds = int(delta.total_seconds())
+    if seconds <= 0:
+        return "less than a minute"
+    minutes, _ = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    if minutes:
+        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+    if not parts:
+        parts.append("less than a minute")
+    return " ".join(parts)
+
+
 @dataclass
 class ProviderState:
     """Runtime state tracked for each provider."""
@@ -54,6 +77,7 @@ class ProviderState:
     connection_status: Optional[ConnectionStatus] = None
     last_error: Optional[str] = None
     loading: bool = False
+    last_loaded_at: Optional[datetime] = None
 
 
 class ChannelListItem(ListItem):
@@ -127,6 +151,34 @@ class ProviderForm(Static):
 
     def focus_name(self) -> None:
         self.query_one("#provider-name", Input).focus()
+
+
+class ReloadConfirmation(ModalScreen[bool]):
+    """Modal dialog asking the user to confirm a reload."""
+
+    def __init__(self, provider_name: str, elapsed: timedelta) -> None:
+        super().__init__()
+        self._provider_name = provider_name
+        self._elapsed = elapsed
+
+    def compose(self) -> ComposeResult:
+        message = (
+            f"{self._provider_name} was last loaded {_format_timedelta(self._elapsed)} ago."
+            "\nReloading again may not be necessary. Proceed?"
+        )
+        with Vertical(id="reload-confirmation"):
+            yield Label(message, id="reload-confirmation-message")
+            with Horizontal(id="reload-confirmation-buttons"):
+                yield Button("Cancel", id="reload-cancel", variant="warning")
+                yield Button("Reload", id="reload-confirm", variant="success")
+
+    @on(Button.Pressed, "#reload-confirm")
+    def _on_confirm(self, _: Button.Pressed) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#reload-cancel")
+    def _on_cancel(self, _: Button.Pressed) -> None:
+        self.dismiss(False)
 
 
 # We keep a very small inline stylesheet so the application can always boot
@@ -325,12 +377,31 @@ class StreamdeckApp(App[None]):
         self._worker = None
 
 
-    def _load_provider(self, index: int) -> None:
+    def _load_provider(self, index: int, *, force: bool = False) -> None:
         state = self._states[index]
+        if not force and state.last_loaded_at is not None:
+            now = datetime.now(tz=timezone.utc)
+            elapsed = now - state.last_loaded_at
+            if elapsed < RECENT_RELOAD_THRESHOLD:
+                elapsed_label = _format_timedelta(elapsed)
+                message = (
+                    f"Skipped automatic reload for {state.config.name}; "
+                    f"last loaded {elapsed_label} ago"
+                )
+                self._set_status(message)
+                log.info(
+                    "Skipping automatic reload for %s; last loaded %s ago",
+                    state.config.name,
+                    elapsed_label,
+                )
+                return
         self._stop_worker()
         state.loading = True
         state.last_error = None
+        state.channels = None
+        state.connection_status = None
         log.info("Beginning channel load for provider %s", state.config.name)
+        self._clear_channels("Loading channels…")
         self._refresh_provider_list()
         self._set_status(f"Loading channels for {state.config.name}…")
         self._worker = self.run_worker(self._fetch_provider(state), name=f"provider:{state.config.name}")
@@ -360,6 +431,7 @@ class StreamdeckApp(App[None]):
         state.loading = False
         state.last_error = message
         state.channels = None
+        state.last_loaded_at = None
         if state is self._current_state():
             self._clear_channels(f"Failed to load channels: {message}")
         self._refresh_provider_list()
@@ -370,6 +442,7 @@ class StreamdeckApp(App[None]):
         state.loading = False
         state.last_error = None
         state.channels = channels
+        state.last_loaded_at = datetime.now(tz=timezone.utc)
         log.info(
             "Loaded %d channels for provider %s",
             len(channels),
@@ -421,7 +494,6 @@ class StreamdeckApp(App[None]):
         log.info("Selected provider %s", state.config.name)
         self.query_one(ProviderForm).populate(state.config)
         if state.channels is None:
-            self._clear_channels("Loading channels…")
             self._load_provider(index)
         else:
             self._apply_filter(self.query_one("#search", Input).value)
@@ -492,6 +564,7 @@ class StreamdeckApp(App[None]):
             state.channels = None
             state.connection_status = None
             state.last_error = None
+            state.last_loaded_at = None
             if provider.name != previous_name:
                 self._config.remove(previous_name)
             self._config.add_or_update(provider)
@@ -529,13 +602,53 @@ class StreamdeckApp(App[None]):
         if self._active_index is None:
             self._set_status("No provider selected")
             return
-        state = self._states[self._active_index]
-        state.channels = None
-        state.connection_status = None
-        state.last_error = None
+        index = self._active_index
+        state = self._states[index]
+        if state.last_loaded_at is not None:
+            now = datetime.now(tz=timezone.utc)
+            elapsed = now - state.last_loaded_at
+            if elapsed < RECENT_RELOAD_THRESHOLD:
+                elapsed_label = _format_timedelta(elapsed)
+                log.info(
+                    "Reload requested for %s within %s; awaiting confirmation",
+                    state.config.name,
+                    elapsed_label,
+                )
+                dialog = ReloadConfirmation(state.config.name, elapsed)
+                self.push_screen(
+                    dialog,
+                    callback=lambda result, *, index=index, elapsed=elapsed: self._handle_reload_confirmation(
+                        index, result, elapsed
+                    ),
+                )
+                self._set_status(
+                    f"Confirm reload of {state.config.name}? Last loaded {elapsed_label} ago."
+                )
+                return
         log.info("Reloading provider %s", state.config.name)
-        self._clear_channels("Loading channels…")
-        self._load_provider(self._active_index)
+        self._load_provider(index, force=True)
+
+    def _handle_reload_confirmation(
+        self, index: int, confirmed: Optional[bool], elapsed: Optional[timedelta]
+    ) -> None:
+        if not (0 <= index < len(self._states)):
+            return
+        state = self._states[index]
+        elapsed_label = _format_timedelta(elapsed) if elapsed else "an unknown duration"
+        if confirmed:
+            log.info(
+                "Reload confirmed for %s after %s",
+                state.config.name,
+                elapsed_label,
+            )
+            self._load_provider(index, force=True)
+        else:
+            log.info(
+                "Reload cancelled for %s after %s",
+                state.config.name,
+                elapsed_label,
+            )
+            self._set_status(f"Reload cancelled for {state.config.name}")
 
     @on(Button.Pressed, "#provider-new")
     def _on_new_pressed(self, _: Button.Pressed) -> None:
