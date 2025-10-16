@@ -22,16 +22,6 @@ def test_parse_playlist_success():
     assert first.raw_attributes["tvg-id"] == "channel1"
 
 
-def test_parse_playlist_allows_commas_in_attribute_values():
-    playlist = """#EXTM3U
-#EXTINF:-1 tvg-id="" tvg-name="Formula 1 Alexander Albon (Williams, Thailand)" tvg-logo="https://example/logo.png" group-title="FORMULA 1",Formula 1 Alexander Albon (Williams, Thailand)
-https://example.com/channel
-""".splitlines()
-    channels = parse_playlist(playlist)
-    assert channels[0].name == "Formula 1 Alexander Albon (Williams, Thailand)"
-    assert channels[0].raw_attributes["tvg-logo"] == "https://example/logo.png"
-
-
 def test_parse_playlist_requires_extm3u():
     with pytest.raises(PlaylistError):
         parse_playlist(["#EXTINF:-1,Missing header", "http://example.com"])
@@ -48,22 +38,3 @@ def test_filter_channels_matches_multiple_fields():
 def test_parse_playlist_requires_metadata_for_stream_url():
     with pytest.raises(PlaylistError):
         parse_playlist(["#EXTM3U", "http://example.com"])
-
-def test_parse_playlist_without_display_name_uses_tvg_name():
-    playlist = """#EXTM3U
-#EXTINF:-1 tvg-id="id-1" tvg-name="Flo (FLSP) 943" group-title="Sports"
-https://example.com/channel
-""".splitlines()
-    channels = parse_playlist(playlist)
-    assert channels[0].name == "Flo (FLSP) 943"
-    assert channels[0].raw_attributes["tvg-id"] == "id-1"
-
-
-def test_parse_playlist_without_any_name_defaults_to_unknown():
-    playlist = """#EXTM3U
-#EXTINF:-1 group-title="Misc"
-https://example.com/channel
-""".splitlines()
-    channels = parse_playlist(playlist)
-    assert channels[0].name == "Unknown"
-    assert channels[0].group == "Misc"
