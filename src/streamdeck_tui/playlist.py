@@ -72,7 +72,15 @@ def _parse_extinf(line: str) -> tuple[dict[str, str], str]:
                 buffer.append(metadata[i])
                 i += 1
             if i >= len(metadata):
-                raise PlaylistError("Unterminated attribute value")
+                value = "".join(buffer)
+                attributes[current_key] = value
+                log.warning(
+                    "Unterminated attribute value for %s; using remainder '%s'",
+                    current_key,
+                    value,
+                )
+                current_key = None
+                break
             value = "".join(buffer)
             attributes[current_key] = value
             log.debug("Parsed attribute %s=%s", current_key, value)
