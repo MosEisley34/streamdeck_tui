@@ -61,6 +61,24 @@ def test_tabbed_layout_and_log_viewer() -> None:
     asyncio.run(run_app())
 
 
+def test_action_quit_closes_app() -> None:
+    """The quit action should stop the application without errors."""
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig
+
+    async def run_app() -> bool:
+        app = StreamdeckApp(AppConfig())
+        async with app.run_test() as pilot:
+            assert app.is_running
+            await app.action_quit()
+            await pilot.pause()
+        return app.is_running
+
+    is_running = asyncio.run(run_app())
+    assert not is_running
+
+
 def test_refresh_provider_list_handles_none_previous_index(monkeypatch) -> None:
     """Refreshing the provider list should not compare None indexes."""
 
