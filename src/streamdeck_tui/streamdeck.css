@@ -21,8 +21,20 @@
     padding: 1;
 }
 
+#channel-tabs {
+    layout: horizontal;
+    gap: 1;
+    padding-bottom: 1;
+}
+
 #channel-list {
     height: 1fr;
+}
+
+#channel-actions {
+    layout: horizontal;
+    gap: 1;
+    padding-top: 1;
 }
 
 #channel-info {
