@@ -1192,7 +1192,7 @@ class StreamdeckApp(App[None]):
                 viewer.focus()
 
     def _require_active_tab(self, tab: str, message: str) -> bool:
-        if self._active_tab != tab:
+        if self.is_running and self._active_tab != tab:
             self._set_status(message)
             return False
         return True
@@ -1620,6 +1620,26 @@ class StreamdeckApp(App[None]):
             status = "No channels found"
         self._set_status(status)
 
+    def _rebuild_all_channels(self) -> None:
+        """Regenerate the aggregated channel cache across all providers."""
+
+        aggregated: list[tuple[str, Channel]] = []
+        search_index: dict[str, set[int]] = {}
+
+        for state in self._states:
+            channels = state.channels
+            if not channels:
+                continue
+            provider_name = state.config.name
+            for channel in channels:
+                position = len(aggregated)
+                aggregated.append((provider_name, channel))
+                for token in channel._tokens:
+                    search_index.setdefault(token, set()).add(position)
+
+        self._all_channels = aggregated
+        self._all_channels_search_index = search_index if aggregated else None
+
     def _start_channel_render(
         self, channels: Sequence[tuple[str, Channel]]
     ) -> None:
@@ -1761,7 +1781,16 @@ class StreamdeckApp(App[None]):
             )
             with batch_context:
                 list_view.clear()
-                for channel in channels_slice:
+                for entry in channels_slice:
+                    if (
+                        isinstance(entry, tuple)
+                        and len(entry) == 2
+                        and isinstance(entry[1], Channel)
+                    ):
+                        provider_name, channel = entry
+                    else:
+                        provider_name = fallback_provider
+                        channel = entry  # type: ignore[assignment]
                     list_view.append(
                         ChannelListItem(
                             channel,
