@@ -167,9 +167,24 @@ class ProviderState:
 class ChannelListItem(ListItem):
     """Render an IPTV channel in the list."""
 
-    def __init__(self, channel: Channel) -> None:
-        super().__init__(Label(channel.name, id="channel-name", markup=False))
+    def __init__(self, channel: Channel, *, queued: bool = False) -> None:
         self.channel = channel
+        self._queued = queued
+        self._label = Label(channel.name, id="channel-name", markup=False)
+        super().__init__(self._label)
+        self._refresh_label()
+
+    def set_queued(self, queued: bool) -> None:
+        """Update the queued indicator for this item."""
+
+        if self._queued == queued:
+            return
+        self._queued = queued
+        self._refresh_label()
+
+    def _refresh_label(self) -> None:
+        prefix = "⏳ " if self._queued else ""
+        self._label.update(f"{prefix}{self.channel.name}")
 
 
 class ChannelListView(ListView):
@@ -538,6 +553,7 @@ class StreamdeckApp(App[None]):
         Binding("delete", "delete_provider", "Delete provider"),
         Binding("r", "reload_provider", "Reload provider"),
         Binding("p", "play_channel", "Play"),
+        Binding("space", "toggle_channel_queue", "Queue channel"),
         Binding("s", "stop_channel", "Stop"),
         Binding("f", "toggle_favorite", "Favorite"),
         Binding("ctrl+shift+p", "probe_player", "Probe player"),
@@ -561,12 +577,14 @@ class StreamdeckApp(App[None]):
         self.filtered_channels: List[Channel] = []
         self._favorite_entries: list[FavoriteChannel] = list(config.favorites)
         self._active_tab: str = "channels"
-        self._player_process: Optional[Process] = None
-        self._player_handle: Optional[PlayerHandle] = None
-        self._player_task: Optional[asyncio.Task[None]] = None
-        self._player_monitor_task: Optional[asyncio.Task[None]] = None
+        self._queued_channels: set[tuple[str, str]] = set()
+        self._player_handles: dict[tuple[str, str], PlayerHandle] = {}
+        self._player_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._player_monitor_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._player_stop_requested: set[tuple[str, str]] = set()
         self._now_playing: Optional[tuple[str, Channel]] = None
-        self._player_stop_requested: bool = False
+        self._now_playing_key: Optional[tuple[str, str]] = None
+        self._player_process: Optional[Process] = None
         self._stats_accumulator: Optional[StreamStatsAccumulator] = None
         self._worker: Optional[Worker] = None
         self._app_thread_id: int = threading.get_ident()
@@ -710,6 +728,73 @@ class StreamdeckApp(App[None]):
             return self._states[self._active_index]
         return None
 
+    def _provider_state_by_name(self, provider_name: str) -> Optional[ProviderState]:
+        for state in self._states:
+            if state.config.name == provider_name:
+                return state
+        return None
+
+    def _channel_queue_key(self, provider_name: str, channel: Channel) -> tuple[str, str]:
+        return (provider_name, channel.url)
+
+    def _is_channel_queued(
+        self, provider_name: Optional[str], channel: Channel
+    ) -> bool:
+        if provider_name is None:
+            return False
+        return (provider_name, channel.url) in self._queued_channels
+
+    def _update_channel_item_queue_state(
+        self, provider_name: str, channel: Channel, queued: bool
+    ) -> None:
+        list_view = self._query_optional_widget("#channel-list", ListView)
+        if list_view is None:
+            return
+        for item in list_view.children:
+            if isinstance(item, ChannelListItem) and item.channel.url == channel.url:
+                item.set_queued(queued)
+
+    def _refresh_channel_queue_indicators(self) -> None:
+        list_view = self._query_optional_widget("#channel-list", ListView)
+        if list_view is None:
+            return
+        state = self._current_state()
+        provider_name = state.config.name if state else None
+        for item in list_view.children:
+            if isinstance(item, ChannelListItem):
+                item.set_queued(self._is_channel_queued(provider_name, item.channel))
+
+    def _find_channel_by_identifier(
+        self, provider_name: str, channel_identifier: str
+    ) -> Optional[Channel]:
+        state = self._provider_state_by_name(provider_name)
+        if state is None or not state.channels:
+            return None
+        for channel in state.channels:
+            if channel.url == channel_identifier:
+                return channel
+        return None
+
+    def _select_next_playing(self) -> None:
+        if not self._player_handles:
+            self._now_playing = None
+            self._now_playing_key = None
+            self._clear_playing_info()
+            return
+        for key, handle in self._player_handles.items():
+            provider_name, channel_identifier = key
+            channel = self._find_channel_by_identifier(provider_name, channel_identifier)
+            if channel is not None:
+                self._now_playing = (provider_name, channel)
+                self._now_playing_key = key
+                self._player_process = handle.process
+                self._update_playing_info(channel, provider_name)
+                return
+        self._now_playing = None
+        self._now_playing_key = None
+        self._player_process = None
+        self._clear_playing_info()
+
     def _set_status(self, message: str) -> None:
         log.debug("Status update: %s", message)
         status_bar = self._status_bar or self._query_optional_widget(StatusBar)
@@ -796,8 +881,10 @@ class StreamdeckApp(App[None]):
         stats = accumulator.set_resolution(width, height)
         self._emit_stream_stats(stats)
 
-    def _start_player_monitor(self, handle: PlayerHandle) -> None:
-        self._cancel_player_monitor()
+    def _start_player_monitor(
+        self, key: tuple[str, str], handle: PlayerHandle
+    ) -> None:
+        self._cancel_player_monitor(key)
         ipc_path = handle.command.ipc_path
         if not ipc_path:
             return
@@ -809,16 +896,26 @@ class StreamdeckApp(App[None]):
         except RuntimeError:  # pragma: no cover - defensive guard for tests
             log.debug("No running event loop available for player monitor")
             return
-        self._player_monitor_task = loop.create_task(self._monitor_mpv_stats(ipc_path))
+        task = loop.create_task(self._monitor_mpv_stats(ipc_path))
+        self._player_monitor_tasks[key] = task
 
-    def _cancel_player_monitor(self) -> None:
-        task = self._player_monitor_task
+    def _cancel_player_monitor(self, key: Optional[tuple[str, str]] = None) -> None:
+        if key is None:
+            for pending_key in list(self._player_monitor_tasks.keys()):
+                self._cancel_player_monitor(pending_key)
+            return
+        task = self._player_monitor_tasks.pop(key, None)
         if task is not None:
             task.cancel()
-        self._player_monitor_task = None
 
-    def _cleanup_player_resources(self) -> None:
-        handle = self._player_handle
+    def _cleanup_player_resources(
+        self, key: Optional[tuple[str, str]] = None
+    ) -> None:
+        if key is None:
+            for pending_key in list(self._player_handles.keys()):
+                self._cleanup_player_resources(pending_key)
+            return
+        handle = self._player_handles.pop(key, None)
         if handle is None:
             return
         for path in handle.command.cleanup_paths:
@@ -829,7 +926,6 @@ class StreamdeckApp(App[None]):
                     path.unlink()
             except Exception:  # pragma: no cover - cleanup best-effort
                 log.debug("Failed to remove %s", path, exc_info=True)
-        self._player_handle = None
 
     async def _connect_to_mpv_ipc(
         self, ipc_path: str, retries: int = 50, delay: float = 0.1
@@ -1002,66 +1098,100 @@ class StreamdeckApp(App[None]):
     def _start_player_for_channel(self, provider_name: str, channel: Channel) -> None:
         """Launch a media player for the supplied channel."""
 
+        key = self._channel_queue_key(provider_name, channel)
+
         async def runner() -> None:
+            handle: Optional[PlayerHandle] = None
             try:
                 handle = await launch_player(channel, preferred=self._preferred_player)
+            except asyncio.CancelledError:
+                log.info(
+                    "Player launch cancelled for %s (%s)",
+                    channel.name,
+                    provider_name,
+                )
+                raise
             except Exception as exc:  # pragma: no cover - exercised via tests
                 self._call_on_app_thread(
                     self._handle_player_failure,
+                    key,
                     provider_name,
                     channel.name,
                     str(exc),
                 )
                 return
             self._call_on_app_thread(
-                self._handle_player_started, provider_name, channel, handle
+                self._handle_player_started, key, provider_name, channel, handle
             )
             returncode: Optional[int] = None
             try:
                 returncode = await handle.process.wait()
+            except asyncio.CancelledError:
+                log.info(
+                    "Player task cancelled for %s (%s)", channel.name, provider_name
+                )
+                try:
+                    handle.process.terminate()
+                except ProcessLookupError:  # pragma: no cover - defensive guard
+                    pass
+                raise
             except Exception as exc:  # pragma: no cover - process wait failures are rare
                 log.warning("Player wait failed for %s: %s", channel.name, exc)
                 returncode = getattr(handle.process, "returncode", None)
             finally:
                 self._call_on_app_thread(
                     self._handle_player_exit,
+                    key,
                     provider_name,
                     channel.name,
                     returncode,
                 )
 
-        self._stop_player_process(suppress_status=True)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             asyncio.run(runner())
         else:
-            self._player_task = loop.create_task(runner())
+            task = loop.create_task(runner())
+            self._player_tasks[key] = task
 
     def _handle_player_started(
-        self, provider_name: str, channel: Channel, handle: PlayerHandle
+        self,
+        key: tuple[str, str],
+        provider_name: str,
+        channel: Channel,
+        handle: PlayerHandle,
     ) -> None:
-        self._player_handle = handle
-        self._player_process = handle.process
+        self._player_handles[key] = handle
         self._now_playing = (provider_name, channel)
+        self._now_playing_key = key
+        self._player_process = handle.process
         self._clear_stream_stats()
         self._stats_accumulator = StreamStatsAccumulator()
         self._update_playing_info(channel, provider_name)
         self._set_status(f"Playing {channel.name} from {provider_name}")
         log.info("Player launched for %s (%s)", channel.name, provider_name)
-        self._start_player_monitor(handle)
+        self._start_player_monitor(key, handle)
 
     def _handle_player_exit(
-        self, provider_name: str, channel_name: str, returncode: Optional[int]
+        self,
+        key: tuple[str, str],
+        provider_name: str,
+        channel_name: str,
+        returncode: Optional[int],
     ) -> None:
-        self._cancel_player_monitor()
-        self._cleanup_player_resources()
-        self._player_process = None
-        self._player_task = None
-        self._now_playing = None
-        self._clear_playing_info()
-        user_stopped = self._player_stop_requested
-        self._player_stop_requested = False
+        self._cancel_player_monitor(key)
+        self._cleanup_player_resources(key)
+        self._player_tasks.pop(key, None)
+        user_stopped = key in self._player_stop_requested
+        self._player_stop_requested.discard(key)
+        if self._now_playing_key == key or (
+            self._now_playing_key is not None
+            and self._now_playing_key not in self._player_handles
+        ):
+            self._select_next_playing()
+        elif not self._player_handles:
+            self._select_next_playing()
         if user_stopped:
             log.info("Player exited for %s after stop request", channel_name)
             return
@@ -1080,38 +1210,59 @@ class StreamdeckApp(App[None]):
             self._set_status(f"Playback finished for {channel_name}")
             log.info("Player exited for %s (%s)", channel_name, provider_name)
 
-    def _handle_player_failure(self, provider_name: str, channel_name: str, message: str) -> None:
-        self._cancel_player_monitor()
-        self._cleanup_player_resources()
-        self._player_process = None
-        self._player_task = None
-        self._now_playing = None
-        self._clear_playing_info()
+    def _handle_player_failure(
+        self,
+        key: tuple[str, str],
+        provider_name: str,
+        channel_name: str,
+        message: str,
+    ) -> None:
+        self._cancel_player_monitor(key)
+        self._cleanup_player_resources(key)
+        self._player_tasks.pop(key, None)
+        self._player_stop_requested.discard(key)
+        if self._now_playing_key == key or (
+            self._now_playing_key is not None
+            and self._now_playing_key not in self._player_handles
+        ):
+            self._select_next_playing()
+        elif not self._player_handles:
+            self._select_next_playing()
         error = f"Failed to launch player for {channel_name} ({provider_name}): {message}"
         self._set_status(error)
         log.error(error)
 
     def _stop_player_process(
-        self, *, user_requested: bool = False, suppress_status: bool = False
+        self,
+        key: Optional[tuple[str, str]] = None,
+        *,
+        user_requested: bool = False,
+        suppress_status: bool = False,
     ) -> None:
-        should_suppress = user_requested or suppress_status
-        has_process = self._player_process is not None or self._player_task is not None
-        if should_suppress and has_process:
-            self._player_stop_requested = True
-        elif not has_process:
-            self._player_stop_requested = False
-        self._cancel_player_monitor()
-        if self._player_task:
-            self._player_task.cancel()
-            self._player_task = None
-        if self._player_process:
-            try:
-                self._player_process.terminate()
-            except ProcessLookupError:  # pragma: no cover - defensive guard
-                pass
-        self._player_process = None
-        if self._player_process is None and self._player_task is None:
-            self._set_stop_buttons_enabled(False)
+        if key is None:
+            targets = list(
+                set(self._player_handles.keys()) | set(self._player_tasks.keys())
+            )
+        else:
+            targets = [key]
+        if not targets:
+            return
+        if user_requested or suppress_status:
+            self._player_stop_requested.update(targets)
+        else:
+            for target in targets:
+                self._player_stop_requested.discard(target)
+        for target in targets:
+            self._cancel_player_monitor(target)
+            task = self._player_tasks.get(target)
+            if task is not None:
+                task.cancel()
+            handle = self._player_handles.get(target)
+            if handle is not None:
+                try:
+                    handle.process.terminate()
+                except ProcessLookupError:  # pragma: no cover - defensive guard
+                    pass
 
     def _provider_label(self, state: ProviderState) -> str:
         details: list[str] = []
@@ -1383,7 +1534,12 @@ class StreamdeckApp(App[None]):
             with batch_context:
                 list_view.clear()
                 for channel in channels_slice:
-                    list_view.append(ChannelListItem(channel))
+                    list_view.append(
+                        ChannelListItem(
+                            channel,
+                            queued=self._is_channel_queued(provider_name, channel),
+                        )
+                    )
             target_index = selected_global_index
             if target_index is None:
                 if getattr(list_view, "index", None) is None:
@@ -1721,23 +1877,101 @@ class StreamdeckApp(App[None]):
             )
             log.info("Updated provider %s (previously %s)", provider.name, previous_name)
 
-    def action_play_channel(self) -> None:
+    def action_toggle_channel_queue(self) -> None:
+        if self._active_tab != "channels":
+            self._set_status("Queue channels from the channel browser")
+            return
         provider_name, channel, _ = self._get_selected_entry()
         if provider_name is None or channel is None:
             self._set_status("No channel selected")
             return
+        key = self._channel_queue_key(provider_name, channel)
+        if key in self._queued_channels:
+            self._queued_channels.remove(key)
+            self._update_channel_item_queue_state(provider_name, channel, False)
+            self._set_status(f"Removed {channel.name} from queue")
+            log.info(
+                "Removed %s (%s) from playback queue", channel.name, provider_name
+            )
+        else:
+            self._queued_channels.add(key)
+            self._update_channel_item_queue_state(provider_name, channel, True)
+            self._set_status(f"Queued {channel.name} for playback")
+            log.info("Queued %s (%s) for playback", channel.name, provider_name)
+
+    def action_play_channel(self) -> None:
+        if self._queued_channels:
+            queued = list(self._queued_channels)
+            self._queued_channels.clear()
+            launched = 0
+            for provider_name, channel_identifier in queued:
+                channel = self._find_channel_by_identifier(
+                    provider_name, channel_identifier
+                )
+                if channel is None:
+                    log.warning(
+                        "Skipping queued channel %s (%s); channel not available",
+                        channel_identifier,
+                        provider_name,
+                    )
+                    continue
+                self._start_player_for_channel(provider_name, channel)
+                launched += 1
+            self._refresh_channel_queue_indicators()
+            if launched:
+                message = f"Launched {launched} queued channel(s)"
+                self._set_status(message)
+                log.info(message)
+            else:
+                self._set_status("No queued channels available for playback")
+            return
+        provider_name, channel, _ = self._get_selected_entry()
+        if provider_name is None or channel is None:
+            self._set_status("No channel selected")
+            return
+        key = self._channel_queue_key(provider_name, channel)
+        if key in self._queued_channels:
+            self._queued_channels.discard(key)
+            self._update_channel_item_queue_state(provider_name, channel, False)
         self._set_status(f"Launching player for {channel.name}…")
         self._start_player_for_channel(provider_name, channel)
 
     def action_stop_channel(self) -> None:
-        if self._player_process is None:
+        active_keys = set(self._player_handles.keys()) | set(self._player_tasks.keys())
+        if not active_keys:
             self._set_status("No active player to stop")
             return
-        self._stop_player_process(user_requested=True)
-        self._now_playing = None
-        self._clear_playing_info()
-        self._set_status("Stopped playback")
-        log.info("Stopped player at user request")
+        provider_name, channel, _ = self._get_selected_entry()
+        keys_to_stop: list[tuple[str, str]] = []
+        if provider_name is not None and channel is not None:
+            key = self._channel_queue_key(provider_name, channel)
+            if key in active_keys:
+                keys_to_stop.append(key)
+        if not keys_to_stop:
+            if self._now_playing_key is not None and self._now_playing_key in active_keys:
+                keys_to_stop.append(self._now_playing_key)
+            else:
+                keys_to_stop = list(active_keys)
+        stopped_names: list[str] = []
+        for key in keys_to_stop:
+            provider, channel_identifier = key
+            channel_obj = self._find_channel_by_identifier(provider, channel_identifier)
+            if channel_obj is not None:
+                stopped_names.append(channel_obj.name)
+            self._stop_player_process(key, user_requested=True)
+        if not stopped_names:
+            self._set_status("Stopping playback")
+            log.info("Stop requested for %d channel(s)", len(keys_to_stop))
+        elif len(stopped_names) == 1:
+            self._set_status(f"Stopping playback for {stopped_names[0]}")
+            log.info("Stop requested for %s", stopped_names[0])
+        else:
+            self._set_status(
+                f"Stopping playback for {len(stopped_names)} channels"
+            )
+            log.info(
+                "Stop requested for channels: %s", ", ".join(stopped_names)
+            )
 
     def action_toggle_favorite(self) -> None:
         provider_name, channel, favorite_entry = self._get_selected_entry()
@@ -1773,6 +2007,12 @@ class StreamdeckApp(App[None]):
             self._set_status("No provider selected")
             return
         state = self._states.pop(self._active_index)
+        removed_keys = {
+            key for key in self._queued_channels if key[0] == state.config.name
+        }
+        if removed_keys:
+            self._queued_channels.difference_update(removed_keys)
+            self._refresh_channel_queue_indicators()
         self._config.remove(state.config.name)
         self._save_current_config()
         log.warning("Deleted provider %s", state.config.name)
@@ -1825,6 +2065,20 @@ class StreamdeckApp(App[None]):
                 return
         log.info("Reloading provider %s", state.config.name)
         self._load_provider(index, force=True)
+
+    async def on_shutdown(self) -> None:
+        self._stop_player_process(suppress_status=True)
+        self._cancel_player_monitor()
+        self._cleanup_player_resources()
+        for task in list(self._player_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._player_tasks.clear()
+        self._player_stop_requested.clear()
+        self._now_playing = None
+        self._now_playing_key = None
+        self._player_process = None
+        self._clear_playing_info()
 
     def _handle_reload_confirmation(
         self, index: int, confirmed: Optional[bool], elapsed: Optional[timedelta]
