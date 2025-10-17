@@ -24,25 +24,32 @@ TabPane {
     padding-top: 1;
 }
 
+#provider-progress {
+    border: heavy $surface;
+    padding: 0 1;
+    min-height: 3;
+}
+
+#channel-browser {
+    layout: horizontal;
+    height: 1fr;
+}
+
 #channel-list,
 #favorites-list,
 #log-viewer {
     height: 1fr;
 }
 
-#channel-info-panels {
-    layout: horizontal;
-    height: auto;
+#channel-list {
+    width: 3fr;
+    min-width: 48;
 }
 
-#channel-info-container,
-#playing-info-container {
+#channel-sidebar {
     layout: vertical;
     width: 1fr;
-}
-
-#channel-actions {
-    layout: horizontal;
+    min-width: 32;
 }
 
 #channel-info,
@@ -56,6 +63,14 @@ TabPane {
     border: heavy $surface;
     width: 1fr;
     min-height: 5;
+}
+
+#channel-actions {
+    layout: horizontal;
+}
+
+#playing-stop {
+    width: 1fr;
 }
 
 #log-viewer {

@@ -5,7 +5,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Mapping, Optional, Sequence
+from typing import Callable, Iterable, List, Mapping, Optional, Sequence
 from urllib import request
 
 from .logging_utils import get_logger
@@ -194,23 +194,61 @@ def parse_playlist(lines: Iterable[str]) -> List[Channel]:
     return channels
 
 
-def load_playlist(source: str | Path) -> List[Channel]:
+def load_playlist(
+    source: str | Path,
+    *,
+    progress: Optional[Callable[[int, Optional[int]], None]] = None,
+) -> List[Channel]:
     """Load and parse a playlist from a local path or URL."""
+
+    def report(loaded: int, total: Optional[int]) -> None:
+        if progress is None:
+            return
+        try:
+            progress(loaded, total)
+        except Exception:  # pragma: no cover - diagnostic safeguard
+            log.exception("Progress callback failed")
 
     source_str = str(source)
     log.info("Loading playlist from %s", source_str)
+    chunk_size = 64_000
+    data = bytearray()
+
     if source_str.startswith(("http://", "https://")):
         with request.urlopen(source_str, timeout=30.0) as response:
-            content = response.read().decode("utf8", errors="replace")
-        log.debug("Downloaded playlist bytes: %d", len(content))
-        text = content.splitlines()
+            total = getattr(response, "length", None)
+            if total is None:
+                length_header = response.headers.get("Content-Length")
+                if length_header:
+                    try:
+                        total = int(length_header)
+                    except ValueError:
+                        total = None
+            while True:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+                data.extend(chunk)
+                report(len(data), total)
+        report(len(data), total)
+        text = data.decode("utf8", errors="replace").splitlines()
+        log.debug("Downloaded playlist bytes: %d", len(data))
         return parse_playlist(text)
+
     path = Path(source)
     if not path.exists():
         raise PlaylistError(f"Playlist path not found: {path}")
-    content = path.read_text(encoding="utf8")
-    log.debug("Read playlist file %s (%d bytes)", path, len(content))
-    return parse_playlist(content.splitlines())
+    total = path.stat().st_size
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            data.extend(chunk)
+            report(len(data), total)
+    report(len(data), total)
+    log.debug("Read playlist file %s (%d bytes)", path, len(data))
+    return parse_playlist(data.decode("utf8", errors="replace").splitlines())
 
 
 def filter_channels(
