@@ -21,13 +21,30 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         default=CONFIG_PATH,
         help="Path to configuration file (default: %(default)s)",
     )
+    parser.add_argument(
+        "--log-level",
+        default=None,
+        help="Override STREAMDECK_TUI_LOG_LEVEL for this invocation",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help=(
+            "Write logs to this file instead of the default or"
+            " STREAMDECK_TUI_LOG_FILE"
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Iterable[str] | None = None) -> None:
-    configure_logging()
-    warn_if_legacy_stylesheet()
     args = parse_args(argv)
+    configure_logging(
+        level=args.log_level,
+        log_file=str(args.log_file) if args.log_file is not None else None,
+    )
+    warn_if_legacy_stylesheet()
     log.info("CLI invoked with config=%s", args.config)
     config = load_config(args.config)
     app = StreamdeckApp(config, config_path=args.config)

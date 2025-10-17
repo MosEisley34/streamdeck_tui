@@ -129,9 +129,10 @@ properties. After reinstalling you will receive the updated CSS automatically.
 
 Streamdeck TUI enables detailed logging by default so you can capture diagnostics while testing playlists and provider APIs.
 Runtime messages are written both to stderr and to `~/.cache/streamdeck_tui.log` unless you override the location. Tweak the
-verbosity and log destination with environment variables:
+verbosity and log destination with command-line flags or environment variables:
 
 ```bash
+streamdeck-tui --log-level DEBUG --log-file ./streamdeck_tui.log
 export STREAMDECK_TUI_LOG_LEVEL=DEBUG        # emit verbose diagnostics (INFO by default)
 export STREAMDECK_TUI_LOG_FILE=/tmp/tui.log  # choose a custom log file path
 ```
