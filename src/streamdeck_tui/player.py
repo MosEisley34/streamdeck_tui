@@ -120,6 +120,16 @@ def build_player_command(channel: Channel, *, preferred: Optional[str] = None) -
                 "--force-window=immediate",
                 "--player-operation-mode=pseudo-gui",
                 "--no-terminal",
+                "--hwdec=vaapi",
+                "--vo=gpu",
+                "--gpu-context=x11",
+                "--no-interpolation",
+                "--video-sync=display-resample",
+                "--scale=bilinear",
+                "--dscale=bilinear",
+                "--cscale=bilinear",
+                "--framedrop=vo",
+                "--mute",
             ]
         )
         if ipc_path:

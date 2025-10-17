@@ -46,11 +46,22 @@ def test_build_player_command_adds_mpv_flags(monkeypatch):
     channel = Channel(name="Test", url="http://example/stream")
     command = build_player_command(channel)
     assert command.executable == "/usr/bin/mpv"
-    assert command.args[:3] == [
+    expected_flags = [
         "--force-window=immediate",
         "--player-operation-mode=pseudo-gui",
         "--no-terminal",
+        "--hwdec=vaapi",
+        "--vo=gpu",
+        "--gpu-context=x11",
+        "--no-interpolation",
+        "--video-sync=display-resample",
+        "--scale=bilinear",
+        "--dscale=bilinear",
+        "--cscale=bilinear",
+        "--framedrop=vo",
+        "--mute",
     ]
+    assert command.args[: len(expected_flags)] == expected_flags
     assert command.args[-1] == channel.url
     ipc_flags = [arg for arg in command.args if arg.startswith("--input-ipc-server=")]
     assert ipc_flags, "mpv commands should include an IPC server flag"
