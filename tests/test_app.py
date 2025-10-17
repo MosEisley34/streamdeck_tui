@@ -62,6 +62,35 @@ def test_tabbed_layout_and_log_viewer() -> None:
     asyncio.run(run_app())
 
 
+def test_provider_form_hidden_until_new_action() -> None:
+    """The provider form should start hidden and reveal after requesting a new provider."""
+
+    from textual.widgets import ListView
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+
+    provider = ProviderConfig(name="Test", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+    app._states[0].channels = []
+
+    async def run_app() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            container = app.query_one("#provider-form-container")
+            assert not container.display
+            provider_list = app.query_one("#provider-list", ListView)
+            assert provider_list.has_focus
+
+            app.action_new_provider()
+            await pilot.pause()
+
+            assert container.display
+            assert app.provider_form_visible
+
+    asyncio.run(run_app())
+
+
 def test_action_quit_closes_app() -> None:
     """The quit action should stop the application without errors."""
 
@@ -160,6 +189,48 @@ def test_refresh_provider_list_handles_none_previous_index(monkeypatch) -> None:
     app._refresh_provider_list()
 
     assert dummy.index is None
+
+
+@pytest.mark.parametrize(
+    ("percent", "expected_colour"),
+    [(0.25, "green"), (0.8, "yellow"), (0.95, "red")],
+)
+def test_connection_usage_bar_colour_thresholds(percent: float, expected_colour: str) -> None:
+    """ConnectionUsageBar should emit coloured markup according to usage."""
+
+    from streamdeck_tui.app import ConnectionUsageBar
+
+    bar = ConnectionUsageBar()
+    active = int(round(percent * 100))
+    bar.update_status(
+        active_connections=active,
+        max_connections=100,
+        percent=percent,
+        message="Peak"
+    )
+
+    markup = bar.last_markup
+    assert f"[{expected_colour}]" in markup
+    assert f"{active}/100" in markup
+    assert "Peak" in markup
+
+
+def test_connection_usage_bar_fallback_when_missing_data() -> None:
+    """The usage bar should fall back to a helpful message when data is missing."""
+
+    from streamdeck_tui.app import ConnectionUsageBar
+
+    bar = ConnectionUsageBar()
+    bar.update_status(
+        active_connections=None,
+        max_connections=None,
+        percent=None,
+        message="Status unavailable"
+    )
+
+    markup = bar.last_markup
+    assert "Status unavailable" in markup
+    assert "[dim]" in markup
 
 
 def test_update_playing_info_handles_missing_widget(monkeypatch) -> None:
