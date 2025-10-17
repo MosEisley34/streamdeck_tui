@@ -542,6 +542,7 @@ class StreamdeckApp(App[None]):
         config: AppConfig,
         *,
         config_path: Optional[Path] = None,
+        preferred_player: Optional[str] = None,
     ) -> None:
         super().__init__()
         self._config = config
@@ -574,6 +575,7 @@ class StreamdeckApp(App[None]):
         self._channel_window_start: int = 0
         self._probing_player: bool = False
         self._provider_colors: dict[str, str] = {}
+        self._preferred_player: Optional[str] = preferred_player
         log.debug("Inline stylesheet active (%d characters)", len(self.CSS))
         log.info(
             "StreamdeckApp initialized with %d provider(s); config path=%s",
@@ -994,7 +996,7 @@ class StreamdeckApp(App[None]):
 
         async def runner() -> None:
             try:
-                handle = await launch_player(channel)
+                handle = await launch_player(channel, preferred=self._preferred_player)
             except Exception as exc:  # pragma: no cover - exercised via tests
                 self._call_on_app_thread(
                     self._handle_player_failure,
@@ -1611,7 +1613,7 @@ class StreamdeckApp(App[None]):
 
         def worker() -> None:
             try:
-                summary = probe_player()
+                summary = probe_player(preferred=self._preferred_player)
             except Exception as exc:  # pragma: no cover - depends on runtime env
                 self._call_on_app_thread(
                     self._handle_probe_result,

@@ -35,6 +35,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
             " STREAMDECK_TUI_LOG_FILE"
         ),
     )
+    parser.add_argument(
+        "--player",
+        dest="preferred_player",
+        default=None,
+        help="Preferred media player executable to launch (default: auto-detect)",
+    )
     return parser.parse_args(argv)
 
 
@@ -47,7 +53,11 @@ def main(argv: Iterable[str] | None = None) -> None:
     warn_if_legacy_stylesheet()
     log.info("CLI invoked with config=%s", args.config)
     config = load_config(args.config)
-    app = StreamdeckApp(config, config_path=args.config)
+    app = StreamdeckApp(
+        config,
+        config_path=args.config,
+        preferred_player=args.preferred_player,
+    )
     log.info("Launching Textual application")
     try:
         app.run()

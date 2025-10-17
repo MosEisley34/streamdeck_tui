@@ -3,6 +3,7 @@
 import asyncio
 import importlib.util
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import pytest
 
@@ -42,7 +43,7 @@ def test_tabbed_layout_and_log_viewer() -> None:
     from streamdeck_tui.logging_utils import get_logger
 
     provider = ProviderConfig(name="Test", playlist_url="http://example.com")
-    app = StreamdeckApp(AppConfig(providers=[provider]))
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
 
     async def run_app() -> None:
         async with app.run_test() as pilot:
@@ -86,7 +87,7 @@ def test_refresh_provider_list_handles_none_previous_index(monkeypatch) -> None:
     from streamdeck_tui.config import AppConfig, ProviderConfig
 
     provider = ProviderConfig(name="Test", playlist_url="http://example.com")
-    app = StreamdeckApp(AppConfig(providers=[provider]))
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
     app._active_index = None
     app._states = [ProviderState(provider)]
 
@@ -152,7 +153,7 @@ def test_load_provider_skips_recent_refresh(monkeypatch) -> None:
     monkeypatch.setattr(app_module, "log", dummy_logger)
 
     provider = ProviderConfig(name="Test", playlist_url="http://example.com")
-    app = StreamdeckApp(AppConfig(providers=[provider]))
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
 
     state = app._states[0]
     state.last_loaded_at = datetime.now(tz=timezone.utc) - timedelta(hours=1)
@@ -477,7 +478,7 @@ def test_fetch_provider_error_on_app_thread(monkeypatch) -> None:
     from streamdeck_tui.config import AppConfig, ProviderConfig
 
     provider = ProviderConfig(name="Demo", playlist_url="http://example.com")
-    app = StreamdeckApp(AppConfig(providers=[provider]))
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
     state = app._states[0]
     state.loading = True
     app._worker = object()
@@ -509,7 +510,7 @@ def test_toggle_favorite_updates_config(monkeypatch) -> None:
     from streamdeck_tui.playlist import Channel
 
     provider = ProviderConfig(name="Demo", playlist_url="http://example.com")
-    app = StreamdeckApp(AppConfig(providers=[provider]))
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
     state = app._states[0]
     channel = Channel(name="Demo Channel", url="http://example.com/stream")
     state.channels = [channel]
@@ -571,7 +572,7 @@ def test_action_play_channel_handles_launch_failure(monkeypatch) -> None:
     from streamdeck_tui.playlist import Channel
 
     provider = ProviderConfig(name="Demo", playlist_url="http://example.com")
-    app = StreamdeckApp(AppConfig(providers=[provider]))
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
     state = app._states[0]
     channel = Channel(name="Demo Channel", url="http://example.com/stream")
     state.channels = [channel]
@@ -600,7 +601,10 @@ def test_action_play_channel_handles_launch_failure(monkeypatch) -> None:
 
     monkeypatch.setattr(StreamdeckApp, "query_one", fake_query_one, raising=False)
 
-    async def failing_launch(_: Channel):  # pragma: no cover - trivial async stub
+    captured_preferred: list[Optional[str]] = []
+
+    async def failing_launch(_: Channel, *, preferred: Optional[str] = None):  # pragma: no cover - trivial async stub
+        captured_preferred.append(preferred)
         raise RuntimeError("player failed")
 
     monkeypatch.setattr("streamdeck_tui.app.launch_player", failing_launch, raising=False)
@@ -608,4 +612,5 @@ def test_action_play_channel_handles_launch_failure(monkeypatch) -> None:
     app.action_play_channel()
 
     assert app._player_process is None
+    assert captured_preferred == ["mpv"]
     assert any("Failed to launch player" in status for status in statuses)
