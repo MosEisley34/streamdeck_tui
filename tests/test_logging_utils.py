@@ -46,9 +46,16 @@ def test_cli_main_configures_logging_without_ui(monkeypatch: pytest.MonkeyPatch,
         return {"path": path}
 
     class DummyApp:
-        def __init__(self, config: dict[str, Any], *, config_path: Any) -> None:
+        def __init__(
+            self,
+            config: dict[str, Any],
+            *,
+            config_path: Any,
+            preferred_player: Any = None,
+        ) -> None:
             self.config = config
             self.config_path = config_path
+            self.preferred_player = preferred_player
             self.ran = False
             created_apps.append(self)
 
@@ -104,9 +111,16 @@ def test_cli_accepts_logging_overrides(
         return {"path": path}
 
     class DummyApp:
-        def __init__(self, config: dict[str, Any], *, config_path: Any) -> None:
+        def __init__(
+            self,
+            config: dict[str, Any],
+            *,
+            config_path: Any,
+            preferred_player: Any = None,
+        ) -> None:
             self.config = config
             self.config_path = config_path
+            self.preferred_player = preferred_player
 
         def run(self) -> None:
             pass
@@ -122,6 +136,60 @@ def test_cli_accepts_logging_overrides(
     assert captured[-1][0] == "DEBUG"
     assert captured[-1][1] == str(log_file)
     assert log_file.exists()
+
+
+def test_cli_passes_preferred_player(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The CLI should pass --player through to the application."""
+
+    monkeypatch.setenv("STREAMDECK_TUI_LOG_FILE", "")
+
+    from streamdeck_tui import logging_utils
+
+    importlib.reload(logging_utils)
+    cli = importlib.reload(importlib.import_module("streamdeck_tui.cli"))
+
+    monkeypatch.setattr(logging_utils.configure_logging, "_configured", False, raising=False)
+    monkeypatch.delattr(logging_utils.configure_logging, "_app", raising=False)
+    monkeypatch.delattr(logging_utils.configure_logging, "_log_viewer", raising=False)
+    monkeypatch.delattr(logging_utils.configure_logging, "_textual_handler", raising=False)
+    monkeypatch.delattr(logging_utils.configure_logging, "_ui_handler", raising=False)
+    monkeypatch.delattr(logging_utils.configure_logging, "_file_handler", raising=False)
+    monkeypatch.delattr(logging_utils.configure_logging, "_log_path", raising=False)
+    monkeypatch.delattr(logging_utils.configure_logging, "_level", raising=False)
+
+    logger = logging.getLogger("streamdeck_tui")
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+
+    def fake_load_config(path: Any) -> dict[str, Any]:
+        return {"path": path}
+
+    created_apps: list[Any] = []
+
+    class DummyApp:
+        def __init__(
+            self,
+            config: dict[str, Any],
+            *,
+            config_path: Any,
+            preferred_player: Any = None,
+        ) -> None:
+            self.config = config
+            self.config_path = config_path
+            self.preferred_player = preferred_player
+            created_apps.append(self)
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli, "load_config", fake_load_config)
+    monkeypatch.setattr(cli, "StreamdeckApp", DummyApp)
+    monkeypatch.setattr(cli, "warn_if_legacy_stylesheet", lambda: None)
+
+    cli.main(("--player", "custom-mpv"))
+
+    assert created_apps, "StreamdeckApp should be instantiated"
+    assert created_apps[-1].preferred_player == "custom-mpv"
 
 
 def test_configure_logging_updates_level(monkeypatch: pytest.MonkeyPatch) -> None:
