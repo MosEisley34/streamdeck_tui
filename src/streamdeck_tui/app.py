@@ -528,6 +528,7 @@ class StreamdeckApp(App[None]):
     CHANNEL_RENDER_BATCH_DELAY = 0.001
     CHANNEL_WINDOW_SIZE = 200
     CHANNEL_WINDOW_MARGIN = 40
+    provider_form_visible: reactive[bool] = reactive(False)
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit"),
         Binding("q", "quit", "Quit"),
@@ -606,7 +607,8 @@ class StreamdeckApp(App[None]):
                         f"Add or remove providers below. Changes are saved to config.yaml ({self._config_destination_label()}).",
                         id="providers-help",
                     )
-                    yield ProviderForm(id="provider-form")
+                    with Vertical(id="provider-form-container"):
+                        yield ProviderForm(id="provider-form")
             with TabPane("Channel browser", id="channels-tab"):
                 with Vertical(id="channels-pane"):
                     yield Input(placeholder="Search channels…", id="search")
@@ -674,10 +676,40 @@ class StreamdeckApp(App[None]):
             self.query_one("#provider-list", ListView).focus()
         else:
             self.query_one(StatusBar).status = "Add a provider to get started"
+            self._show_provider_form()
             self.query_one(ProviderForm).focus_name()
             log.info("No providers configured; prompting user to add one")
         self._update_tab_buttons()
         self._refresh_favorites_view()
+        self._update_provider_form_visibility(self.provider_form_visible)
+
+    def _focus_provider_list(self) -> None:
+        provider_list = self._query_optional_widget("#provider-list", ListView)
+        if provider_list is not None:
+            provider_list.focus()
+
+    def _update_provider_form_visibility(self, visible: bool) -> None:
+        container = self._query_optional_widget("#provider-form-container", Vertical)
+        if container is None:
+            return
+        container.display = visible
+        if not visible:
+            self._focus_provider_list()
+
+    def watch_provider_form_visible(self, visible: bool) -> None:
+        self._update_provider_form_visibility(visible)
+
+    def _show_provider_form(self) -> None:
+        if self.provider_form_visible:
+            self._update_provider_form_visibility(True)
+        else:
+            self.provider_form_visible = True
+
+    def _hide_provider_form(self) -> None:
+        if not self.provider_form_visible:
+            self._update_provider_form_visibility(False)
+            return
+        self.provider_form_visible = False
 
     def _mark_channel_list_ready(self) -> None:
         if self._channel_list_ready:
@@ -1526,6 +1558,10 @@ class StreamdeckApp(App[None]):
         state.loading_bytes_total = None
         if state is self._current_state():
             self._clear_channels(f"Failed to load channels: {message}")
+            self._show_provider_form()
+            form = self._query_optional_widget(ProviderForm)
+            if form is not None:
+                form.focus_name()
         self._refresh_provider_list()
         self._set_status(f"Failed to load {state.config.name}: {message}")
         log.error("Provider %s failed to load: %s", state.config.name, message)
@@ -1550,6 +1586,7 @@ class StreamdeckApp(App[None]):
             self._set_status(
                 f"Loaded {len(channels)} channels for {state.config.name}"
             )
+            self._hide_provider_form()
         self._refresh_provider_list()
         self._update_provider_progress_widget(state)
 
@@ -1593,6 +1630,10 @@ class StreamdeckApp(App[None]):
         self._editing_name = state.config.name
         log.info("Selected provider %s", state.config.name)
         self.query_one(ProviderForm).populate(state.config)
+        if self.provider_form_visible:
+            self._show_provider_form()
+        else:
+            self._hide_provider_form()
         if state.channels is None:
             self._load_provider(index)
         else:
@@ -1623,6 +1664,7 @@ class StreamdeckApp(App[None]):
 
     def action_new_provider(self) -> None:
         form = self.query_one(ProviderForm)
+        self._show_provider_form()
         form.clear()
         form.focus_name()
         self._editing_name = None
@@ -1630,7 +1672,8 @@ class StreamdeckApp(App[None]):
         log.info("Creating a new provider entry")
 
     def action_save_provider(self) -> None:
-        self._save_provider()
+        if self._save_provider():
+            self._hide_provider_form()
 
     def action_probe_player(self) -> None:
         if self._probing_player:
@@ -1668,21 +1711,21 @@ class StreamdeckApp(App[None]):
             self._set_status(status)
             log.error("Player probe failed: %s", message)
 
-    def _save_provider(self) -> None:
+    def _save_provider(self) -> bool:
         form = self.query_one(ProviderForm)
         provider = form.read()
         if not provider.name:
             self._set_status("Provider name is required")
             form.focus_name()
-            return
+            return False
         if not provider.playlist_url:
             self._set_status("Playlist URL is required")
             self.query_one("#provider-playlist", Input).focus()
-            return
+            return False
         if self._editing_name is None:
             if self._name_exists(provider.name):
                 self._set_status("A provider with that name already exists")
-                return
+                return False
             state = ProviderState(provider)
             self._states.append(state)
             self._config.add_or_update(provider)
@@ -1695,31 +1738,32 @@ class StreamdeckApp(App[None]):
                 f"Added provider {provider.name} (saved to {self._config_destination_label()})"
             )
             log.info("Added provider %s", provider.name)
-        else:
-            if self._active_index is None:
-                self._set_status("No provider selected")
-                return
-            state = self._states[self._active_index]
-            previous_name = state.config.name
-            if provider.name != previous_name and self._name_exists(provider.name):
-                self._set_status("A provider with that name already exists")
-                return
-            state.config = provider
-            state.channels = None
-            state.connection_status = None
-            state.last_error = None
-            state.last_loaded_at = None
-            if provider.name != previous_name:
-                self._config.remove(previous_name)
-            self._config.add_or_update(provider)
-            self._editing_name = provider.name
-            self._save_current_config()
-            self._refresh_provider_list()
-            self._select_provider(self._active_index)
-            self._set_status(
-                f"Updated provider {provider.name} (saved to {self._config_destination_label()})"
-            )
-            log.info("Updated provider %s (previously %s)", provider.name, previous_name)
+            return True
+        if self._active_index is None:
+            self._set_status("No provider selected")
+            return False
+        state = self._states[self._active_index]
+        previous_name = state.config.name
+        if provider.name != previous_name and self._name_exists(provider.name):
+            self._set_status("A provider with that name already exists")
+            return False
+        state.config = provider
+        state.channels = None
+        state.connection_status = None
+        state.last_error = None
+        state.last_loaded_at = None
+        if provider.name != previous_name:
+            self._config.remove(previous_name)
+        self._config.add_or_update(provider)
+        self._editing_name = provider.name
+        self._save_current_config()
+        self._refresh_provider_list()
+        self._select_provider(self._active_index)
+        self._set_status(
+            f"Updated provider {provider.name} (saved to {self._config_destination_label()})"
+        )
+        log.info("Updated provider %s (previously %s)", provider.name, previous_name)
+        return True
 
     def action_play_channel(self) -> None:
         provider_name, channel, _ = self._get_selected_entry()
@@ -1793,6 +1837,7 @@ class StreamdeckApp(App[None]):
             self._set_status(
                 f"Removed provider {state.config.name} (saved to {location})"
             )
+            self._show_provider_form()
             self.query_one(ProviderForm).clear()
             self.query_one(ProviderForm).focus_name()
 
