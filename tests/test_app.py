@@ -64,7 +64,7 @@ def test_tabbed_layout_and_log_viewer() -> None:
 def test_action_quit_closes_app() -> None:
     """The quit action should stop the application without errors."""
 
-    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.app import ChannelInfo, StreamdeckApp
     from streamdeck_tui.config import AppConfig
 
     async def run_app() -> bool:
@@ -127,7 +127,7 @@ def test_load_provider_skips_recent_refresh(monkeypatch) -> None:
     """_load_provider should skip automatic reloads performed too soon."""
 
     from streamdeck_tui import app as app_module
-    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.app import ChannelInfo, PlayingChannelInfo, StreamdeckApp
     from streamdeck_tui.config import AppConfig, ProviderConfig
     from streamdeck_tui.playlist import Channel
 
@@ -170,7 +170,7 @@ def test_action_reload_provider_requires_confirmation(monkeypatch) -> None:
     """Manual reloads within the guard window should prompt for confirmation."""
 
     from streamdeck_tui import app as app_module
-    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.app import ChannelInfo, PlayingChannelInfo, StreamdeckApp
     from streamdeck_tui.config import AppConfig, ProviderConfig
 
     dummy_logger = DummyLogger()
@@ -268,6 +268,7 @@ def test_apply_filter_reuses_cached_search_index(monkeypatch) -> None:
 
     class DummyChannelInfo:
         channel = None
+        provider = None
 
     def fake_query_one(self, selector, expected_type=None):
         if selector is ChannelInfo:
@@ -316,6 +317,7 @@ def test_apply_filter_streams_channel_batches() -> None:
     class DummyChannelInfo:
         def __init__(self) -> None:
             self.channel: Channel | None = None
+            self.provider: str | None = None
 
     list_view = DummyListView()
     info = DummyChannelInfo()
@@ -340,8 +342,9 @@ def test_apply_filter_streams_channel_batches() -> None:
         state.channels = channels
         app._channel_render_generation += 1
         generation = app._channel_render_generation
+        provider_name = state.config.name
         render_task = asyncio.create_task(
-            app._render_channel_list(channels, generation)
+            app._render_channel_list(channels, generation, provider_name)
         )
 
         await asyncio.sleep(0.05)
@@ -349,6 +352,7 @@ def test_apply_filter_streams_channel_batches() -> None:
         assert app._channel_rendered_count >= app._channel_first_batch_size
         assert app._channel_rendered_count < len(channels)
         assert info.channel is channels[0]
+        assert info.provider == provider_name
         assert not render_task.done()
 
         await asyncio.wait_for(render_task, timeout=5.0)
@@ -360,7 +364,7 @@ def test_apply_filter_streams_channel_batches() -> None:
 def test_action_reload_provider_without_recent_load(monkeypatch) -> None:
     """Manual reloads after the guard window should proceed immediately."""
 
-    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.app import ChannelInfo, PlayingChannelInfo, StreamdeckApp
     from streamdeck_tui.config import AppConfig, ProviderConfig
 
     provider = ProviderConfig(
@@ -478,7 +482,7 @@ def test_fetch_provider_error_on_app_thread(monkeypatch) -> None:
 def test_toggle_favorite_updates_config(monkeypatch) -> None:
     """Toggling favorites should add and remove entries from the configuration."""
 
-    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.app import ChannelInfo, StreamdeckApp
     from streamdeck_tui.config import AppConfig, ProviderConfig
     from streamdeck_tui.playlist import Channel
 
@@ -495,13 +499,13 @@ def test_toggle_favorite_updates_config(monkeypatch) -> None:
     monkeypatch.setattr(StreamdeckApp, "_set_status", lambda self, message: statuses.append(message), raising=False)
 
     dummy_list = type("DummyList", (), {"index": 0})()
-    dummy_info = type("DummyInfo", (), {"channel": None})()
+    dummy_info = type("DummyInfo", (), {"channel": None, "provider": None})()
     dummy_search = type("DummySearch", (), {"value": ""})()
 
-    def fake_query_one(self, selector: str, expected_type=None):
+    def fake_query_one(self, selector, expected_type=None):
         if selector == "#channel-list":
             return dummy_list
-        if selector == "ChannelInfo":
+        if selector in {"ChannelInfo", ChannelInfo}:
             return dummy_info
         if selector == "#search":
             return dummy_search
@@ -540,7 +544,7 @@ def test_toggle_favorite_updates_config(monkeypatch) -> None:
 def test_action_play_channel_handles_launch_failure(monkeypatch) -> None:
     """Failures launching the player should update the status and not track a process."""
 
-    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.app import ChannelInfo, PlayingChannelInfo, StreamdeckApp
     from streamdeck_tui.config import AppConfig, ProviderConfig
     from streamdeck_tui.playlist import Channel
 
@@ -557,14 +561,17 @@ def test_action_play_channel_handles_launch_failure(monkeypatch) -> None:
     monkeypatch.setattr(StreamdeckApp, "_set_status", lambda self, message: statuses.append(message), raising=False)
 
     dummy_list = type("DummyList", (), {"index": 0})()
-    dummy_info = type("DummyInfo", (), {"channel": None})()
+    dummy_info = type("DummyInfo", (), {"channel": None, "provider": None})()
+    dummy_playing = type("DummyPlaying", (), {"channel": None, "provider": None})()
     dummy_search = type("DummySearch", (), {"value": ""})()
 
-    def fake_query_one(self, selector: str, expected_type=None):
+    def fake_query_one(self, selector, expected_type=None):
         if selector == "#channel-list":
             return dummy_list
-        if selector == "ChannelInfo":
+        if selector in {"ChannelInfo", ChannelInfo}:
             return dummy_info
+        if selector in {"PlayingChannelInfo", PlayingChannelInfo}:
+            return dummy_playing
         if selector == "#search":
             return dummy_search
         raise AssertionError(f"Unexpected selector: {selector}")

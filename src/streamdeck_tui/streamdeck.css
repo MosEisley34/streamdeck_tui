@@ -30,9 +30,22 @@ TabPane {
     height: 1fr;
 }
 
+#channel-info-panels {
+    layout: horizontal;
+    height: auto;
+}
+
 #channel-info,
+#playing-channel-info,
 #favorites-help {
     padding: 1;
+}
+
+#channel-info,
+#playing-channel-info {
+    border: heavy $surface;
+    width: 1fr;
+    min-height: 5;
 }
 
 #log-viewer {
