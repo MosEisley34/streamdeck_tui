@@ -564,6 +564,7 @@ class StreamdeckApp(App[None]):
         self._worker: Optional[Worker] = None
         self._app_thread_id: int = threading.get_ident()
         self._log_viewer: Optional[LogViewer] = None
+        self._status_bar: Optional[StatusBar] = None
         self._channel_render_task: Optional[asyncio.Task[None]] = None
         self._channel_render_generation: int = 0
         self._channel_rendered_count: int = 0
@@ -653,6 +654,10 @@ class StreamdeckApp(App[None]):
             self._log_viewer = None
         if self._log_viewer is not None:
             configure_logging(log_viewer=self._log_viewer, app=self)
+        try:
+            self._status_bar = self.query_one(StatusBar)
+        except Exception:
+            self._status_bar = None
         self._refresh_provider_list()
         if self._states:
             self._select_provider(self._active_index or 0)
@@ -697,7 +702,12 @@ class StreamdeckApp(App[None]):
 
     def _set_status(self, message: str) -> None:
         log.debug("Status update: %s", message)
-        self.query_one(StatusBar).status = message
+        status_bar = self._status_bar or self._query_optional_widget(StatusBar)
+        if status_bar is None:
+            log.debug("Dropping status update; status bar unavailable")
+            return
+        self._status_bar = status_bar
+        status_bar.status = message
 
     def _config_destination_label(self) -> str:
         return str(self._config_path)

@@ -28,7 +28,7 @@ class LogViewer(Static):
             fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
-        self.update(self._render_messages())
+        self._refresh_view()
 
     def on_mount(self) -> None:  # pragma: no cover - requires UI integration
         register_log_viewer(self)
@@ -51,13 +51,13 @@ class LogViewer(Static):
         """Clear all captured log lines."""
 
         self._messages.clear()
-        self.update(self._render_messages())
+        self._refresh_view()
 
     def append_message(self, message: str) -> None:
         """Append a single log *message* to the buffer and refresh display."""
 
         self._messages.append(message)
-        self.update(self._render_messages())
+        self._refresh_view()
 
     def replace_messages(self, messages: Iterable[str]) -> None:
         """Replace the current buffer with ``messages`` and refresh display."""
@@ -65,7 +65,7 @@ class LogViewer(Static):
         self._messages.clear()
         for message in messages:
             self._messages.append(message)
-        self.update(self._render_messages())
+        self._refresh_view()
 
     def _render_messages(self) -> str:
         """Return a textual representation of the buffered log messages."""
@@ -97,3 +97,17 @@ class LogViewer(Static):
             self.append_message(rendered)
             return True
         return super().post_message(message)
+
+    def _refresh_view(self) -> None:
+        """Update the rendered text and scroll to the most recent entry."""
+
+        self.update(self._render_messages())
+        self.call_after_refresh(self._scroll_to_end)
+
+    def _scroll_to_end(self) -> None:
+        """Scroll the widget to the bottom without animation."""
+
+        try:
+            self.scroll_end(animate=False)
+        except Exception:  # pragma: no cover - scrolling may fail during shutdown
+            pass
