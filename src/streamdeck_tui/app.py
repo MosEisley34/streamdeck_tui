@@ -228,7 +228,7 @@ class _ChannelListSummary(Static):
         self.entries = tuple(entries)
 
     def _refresh(self) -> None:
-        body = "\n\n".join(self.entries) if self.entries else self._empty_message
+        body = "\n".join(self.entries) if self.entries else self._empty_message
         self.update(f"[b]{self._title}[/]\n{body}")
 
 
@@ -981,12 +981,12 @@ class StreamdeckApp(App[None]):
                 missing.append(key)
                 continue
             provider_markup = self._provider_markup(provider_name)
-            lines = [provider_markup, escape(channel.name)]
+            parts = [provider_markup, escape(channel.name)]
             if channel.group:
-                lines.append(f"Group: {escape(channel.group)}")
+                parts.append(f"Group: {escape(channel.group)}")
             if key in self._playing_channels:
-                lines.append("[green]Playing[/]")
-            entries.append("\n".join(lines))
+                parts.append("[green]Playing[/]")
+            entries.append(" • ".join(parts))
         if missing:
             self._queue_remove_many(missing)
             self._refresh_channel_queue_indicators()
@@ -1033,13 +1033,13 @@ class StreamdeckApp(App[None]):
         entries: list[str] = []
         for key, (provider_name, channel) in self._playing_channels.items():
             provider_markup = self._provider_markup(provider_name)
-            lines = [provider_markup, escape(channel.name)]
+            parts = [provider_markup, escape(channel.name)]
             if channel.group:
-                lines.append(f"Group: {escape(channel.group)}")
+                parts.append(f"Group: {escape(channel.group)}")
             stats = self._latest_stats.get(key)
             if stats is not None:
-                lines.extend(self._format_stream_stats(stats))
-            entries.append("\n".join(lines))
+                parts.extend(self._format_stream_stats(stats))
+            entries.append(" • ".join(parts))
         panel.update_entries(entries)
         self._set_stop_buttons_enabled(bool(self._playing_channels))
         self._refresh_selected_channels_panel()
