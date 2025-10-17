@@ -15,7 +15,7 @@ from asyncio.subprocess import Process
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, List, Optional, Sequence
+from typing import Any, Callable, List, Optional, Sequence
 
 try:
     from textual import on
@@ -294,6 +294,16 @@ TabPane {
     height: auto;
 }
 
+#channel-info-container,
+#playing-info-container {
+    layout: vertical;
+    width: 1fr;
+}
+
+#channel-actions {
+    layout: horizontal;
+}
+
 #channel-info,
 #playing-channel-info,
 #favorites-help {
@@ -403,8 +413,32 @@ class StreamdeckApp(App[None]):
                     yield Input(placeholder="Search channels…", id="search")
                     yield ChannelListView(id="channel-list")
                     with Horizontal(id="channel-info-panels"):
-                        yield ChannelInfo(id="channel-info")
-                        yield PlayingChannelInfo(id="playing-channel-info")
+                        with Vertical(id="channel-info-container"):
+                            yield ChannelInfo(id="channel-info")
+                            with Horizontal(id="channel-actions"):
+                                yield Button(
+                                    "Play",
+                                    id="channel-play",
+                                    variant="success",
+                                )
+                                yield Button(
+                                    "Stop",
+                                    id="channel-stop",
+                                    variant="warning",
+                                    disabled=True,
+                                )
+                                yield Button(
+                                    "Favorite",
+                                    id="channel-favorite",
+                                )
+                        with Vertical(id="playing-info-container"):
+                            yield PlayingChannelInfo(id="playing-channel-info")
+                            yield Button(
+                                "Stop playback",
+                                id="playing-stop",
+                                variant="warning",
+                                disabled=True,
+                            )
             with TabPane("Favorites", id="favorites-tab"):
                 with Vertical(id="favorites-pane"):
                     yield ListView(id="favorites-list")
@@ -450,6 +484,18 @@ class StreamdeckApp(App[None]):
             except Exception:  # pragma: no cover - diagnostic logging only
                 log.exception("Deferred channel operation failed")
 
+    def _query_optional_widget(
+        self, query: object, widget_type: Optional[type[Any]] = None
+    ) -> Optional[Any]:
+        """Return the first matching widget if it exists."""
+
+        try:
+            if widget_type is None:
+                return self.query_one(query)  # type: ignore[arg-type]
+            return self.query_one(query, widget_type)  # type: ignore[arg-type]
+        except Exception:
+            return None
+
     def _current_state(self) -> Optional[ProviderState]:
         if self._active_index is None:
             return None
@@ -467,7 +513,9 @@ class StreamdeckApp(App[None]):
     def _update_active_channel_info(
         self, channel: Optional[Channel], provider: Optional[str]
     ) -> None:
-        info = self.query_one(ChannelInfo)
+        info = self._query_optional_widget(ChannelInfo)
+        if info is None:
+            return
         info.provider = provider
         info.channel = channel
 
@@ -477,12 +525,20 @@ class StreamdeckApp(App[None]):
     def _update_playing_info(
         self, channel: Optional[Channel], provider: Optional[str]
     ) -> None:
-        info = self.query_one(PlayingChannelInfo)
-        info.provider = provider
-        info.channel = channel
+        info = self._query_optional_widget(PlayingChannelInfo)
+        if info is not None:
+            info.provider = provider
+            info.channel = channel
+        self._set_stop_buttons_enabled(channel is not None)
 
     def _clear_playing_info(self) -> None:
         self._update_playing_info(None, None)
+
+    def _set_stop_buttons_enabled(self, enabled: bool) -> None:
+        for selector in ("#channel-stop", "#playing-stop"):
+            button = self._query_optional_widget(selector, Button)
+            if button is not None:
+                button.disabled = not enabled
 
     def _update_tab_buttons(self) -> None:
         """Refresh the visual state of the tab controls."""
@@ -680,6 +736,8 @@ class StreamdeckApp(App[None]):
             except ProcessLookupError:  # pragma: no cover - defensive guard
                 pass
         self._player_process = None
+        if self._player_process is None and self._player_task is None:
+            self._set_stop_buttons_enabled(False)
 
     def _provider_label(self, state: ProviderState) -> str:
         if state.loading:
@@ -1326,6 +1384,10 @@ class StreamdeckApp(App[None]):
 
     @on(Button.Pressed, "#channel-stop")
     def _on_channel_stop(self, _: Button.Pressed) -> None:
+        self.action_stop_channel()
+
+    @on(Button.Pressed, "#playing-stop")
+    def _on_playing_stop(self, _: Button.Pressed) -> None:
         self.action_stop_channel()
 
     @on(Button.Pressed, "#channel-favorite")

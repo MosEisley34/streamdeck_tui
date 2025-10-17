@@ -123,6 +123,23 @@ def test_refresh_provider_list_handles_none_previous_index(monkeypatch) -> None:
     assert dummy.index is None
 
 
+def test_update_playing_info_handles_missing_widget(monkeypatch) -> None:
+    """Updating the playing info should tolerate missing UI widgets."""
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig
+
+    app = StreamdeckApp(AppConfig())
+
+    def raise_missing(*_args, **_kwargs):  # pragma: no cover - behaviour asserted by lack of crash
+        raise RuntimeError("missing widget")
+
+    monkeypatch.setattr(StreamdeckApp, "query_one", raise_missing, raising=False)
+
+    app._update_playing_info(None, None)
+    app._clear_playing_info()
+
+
 def test_load_provider_skips_recent_refresh(monkeypatch) -> None:
     """_load_provider should skip automatic reloads performed too soon."""
 
