@@ -208,6 +208,52 @@ class FavoriteListItem(ListItem):
         self.favorite = favorite
 
 
+class _ChannelListSummary(Static):
+    """Render a titled list of channel summaries."""
+
+    entries: reactive[tuple[str, ...]] = reactive(tuple())
+
+    def __init__(self, *, title: str, empty_message: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._title = title
+        self._empty_message = empty_message
+
+    def on_mount(self) -> None:
+        self._refresh()
+
+    def watch_entries(self, _: tuple[str, ...]) -> None:
+        self._refresh()
+
+    def update_entries(self, entries: Sequence[str]) -> None:
+        self.entries = tuple(entries)
+
+    def _refresh(self) -> None:
+        body = "\n\n".join(self.entries) if self.entries else self._empty_message
+        self.update(f"[b]{self._title}[/]\n{body}")
+
+
+class SelectedChannelsPanel(_ChannelListSummary):
+    """Display all channels that have been queued for playback."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(
+            title="Selected channels",
+            empty_message="No channels have been queued for playback.",
+            **kwargs,
+        )
+
+
+class PlayingChannelsPanel(_ChannelListSummary):
+    """Display information about all actively playing channels."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(
+            title="Now playing",
+            empty_message="No streams are currently playing.",
+            **kwargs,
+        )
+
+
 class _ChannelSummary(Static):
     """Render a compact summary for a channel selection."""
 
@@ -264,7 +310,7 @@ class ChannelInfo(_ChannelSummary):
 
 
 class PlayingChannelInfo(_ChannelSummary):
-    """Display information about the stream that is currently playing."""
+    """Legacy single-channel playback summary widget."""
 
     stats: reactive[Optional[StreamStats]] = reactive(None)
     provider_color: reactive[Optional[str]] = reactive(None)
@@ -581,13 +627,15 @@ TabPane {
 }
 
 #channel-info,
-#playing-channel-info,
+#selected-channels,
+#playing-channels,
 #favorites-help {
     padding: 1;
 }
 
 #channel-info,
-#playing-channel-info {
+#selected-channels,
+#playing-channels {
     border: heavy $surface;
     width: 1fr;
     min-height: 5;
@@ -669,14 +717,17 @@ class StreamdeckApp(App[None]):
         self._favorite_entries: list[FavoriteChannel] = list(config.favorites)
         self._active_tab: str = "channels"
         self._queued_channels: set[tuple[str, str]] = set()
+        self._queued_order: list[tuple[str, str]] = []
         self._player_handles: dict[tuple[str, str], PlayerHandle] = {}
         self._player_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._player_monitor_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._player_stop_requested: set[tuple[str, str]] = set()
-        self._now_playing: Optional[tuple[str, Channel]] = None
-        self._now_playing_key: Optional[tuple[str, str]] = None
+        self._playing_channels: dict[tuple[str, str], tuple[str, Channel]] = {}
+        self._stream_stats: dict[
+            tuple[str, str], StreamStatsAccumulator
+        ] = {}
+        self._latest_stats: dict[tuple[str, str], StreamStats] = {}
         self._player_process: Optional[Process] = None
-        self._stats_accumulator: Optional[StreamStatsAccumulator] = None
         self._worker: Optional[Worker] = None
         self._app_thread_id: int = threading.get_ident()
         self._log_viewer: Optional[LogViewer] = None
@@ -725,6 +776,7 @@ class StreamdeckApp(App[None]):
                         yield ChannelListView(id="channel-list")
                         with Vertical(id="channel-sidebar"):
                             yield ChannelInfo(id="channel-info")
+                            yield SelectedChannelsPanel(id="selected-channels")
                             with Horizontal(id="channel-actions"):
                                 yield Button(
                                     "Play",
@@ -746,7 +798,7 @@ class StreamdeckApp(App[None]):
                                     id="channel-probe",
                                     variant="default",
                                 )
-                            yield PlayingChannelInfo(id="playing-channel-info")
+                            yield PlayingChannelsPanel(id="playing-channels")
                             yield Button(
                                 "Stop playback",
                                 id="playing-stop",
@@ -791,6 +843,8 @@ class StreamdeckApp(App[None]):
         self._update_tab_buttons()
         self._refresh_favorites_view()
         self._update_provider_form_visibility(self.provider_form_visible)
+        self._refresh_selected_channels_panel()
+        self._refresh_playing_channels_panel()
 
     def _focus_provider_list(self) -> None:
         provider_list = self._query_optional_widget("#provider-list", ListView)
@@ -867,6 +921,31 @@ class StreamdeckApp(App[None]):
             return False
         return (provider_name, channel.url) in self._queued_channels
 
+    def _queue_add(self, key: tuple[str, str]) -> None:
+        if key in self._queued_channels:
+            return
+        self._queued_channels.add(key)
+        self._queued_order.append(key)
+
+    def _queue_remove(self, key: tuple[str, str]) -> None:
+        if key not in self._queued_channels:
+            return
+        self._queued_channels.remove(key)
+        try:
+            self._queued_order.remove(key)
+        except ValueError:
+            pass
+
+    def _queue_remove_many(self, keys: Sequence[tuple[str, str]]) -> None:
+        removal_list = [key for key in keys if key in self._queued_channels]
+        if not removal_list:
+            return
+        removal_set = set(removal_list)
+        self._queued_channels.difference_update(removal_set)
+        self._queued_order = [
+            key for key in self._queued_order if key not in removal_set
+        ]
+
     def _update_channel_item_queue_state(
         self, provider_name: str, channel: Channel, queued: bool
     ) -> None:
@@ -887,6 +966,122 @@ class StreamdeckApp(App[None]):
             if isinstance(item, ChannelListItem):
                 item.set_queued(self._is_channel_queued(provider_name, item.channel))
 
+    def _refresh_selected_channels_panel(self) -> None:
+        panel = self._query_optional_widget(SelectedChannelsPanel)
+        if panel is None:
+            return
+        entries: list[str] = []
+        missing: list[tuple[str, str]] = []
+        for key in self._queued_order:
+            if key not in self._queued_channels:
+                continue
+            provider_name, channel_identifier = key
+            channel = self._find_channel_by_identifier(provider_name, channel_identifier)
+            if channel is None:
+                missing.append(key)
+                continue
+            provider_markup = self._provider_markup(provider_name)
+            lines = [provider_markup, escape(channel.name)]
+            if channel.group:
+                lines.append(f"Group: {escape(channel.group)}")
+            if key in self._playing_channels:
+                lines.append("[green]Playing[/]")
+            entries.append("\n".join(lines))
+        if missing:
+            self._queue_remove_many(missing)
+            self._refresh_channel_queue_indicators()
+            self._refresh_selected_channels_panel()
+            return
+        panel.update_entries(entries)
+
+    def _format_stream_resolution(self, stats: StreamStats) -> Optional[str]:
+        if stats.height is None and stats.width is None:
+            return None
+        tag = resolution_tag_for_height(stats.height)
+        if tag is None:
+            return None
+        label, color = tag
+        if stats.width and stats.height:
+            dims = f"{stats.width}×{stats.height}"
+        elif stats.height:
+            dims = f"{stats.height}p"
+        else:
+            dims = "Unknown"
+        return f"Resolution: [{color}]{label}[/] ({dims})"
+
+    def _format_stream_bitrate(self, stats: StreamStats) -> Optional[str]:
+        if stats.live_bitrate is None and stats.average_bitrate is None:
+            return None
+        live = _format_bitrate(stats.live_bitrate)
+        average = _format_bitrate(stats.average_bitrate)
+        return f"Bitrate: Live {live} • Avg {average}"
+
+    def _format_stream_stats(self, stats: StreamStats) -> list[str]:
+        lines: list[str] = []
+        resolution_line = self._format_stream_resolution(stats)
+        if resolution_line:
+            lines.append(resolution_line)
+        bitrate_line = self._format_stream_bitrate(stats)
+        if bitrate_line:
+            lines.append(bitrate_line)
+        return lines
+
+    def _refresh_playing_channels_panel(self) -> None:
+        panel = self._query_optional_widget(PlayingChannelsPanel)
+        if panel is None:
+            return
+        entries: list[str] = []
+        for key, (provider_name, channel) in self._playing_channels.items():
+            provider_markup = self._provider_markup(provider_name)
+            lines = [provider_markup, escape(channel.name)]
+            if channel.group:
+                lines.append(f"Group: {escape(channel.group)}")
+            stats = self._latest_stats.get(key)
+            if stats is not None:
+                lines.extend(self._format_stream_stats(stats))
+            entries.append("\n".join(lines))
+        panel.update_entries(entries)
+        self._set_stop_buttons_enabled(bool(self._playing_channels))
+        self._refresh_selected_channels_panel()
+
+    def _stats_accumulator_for_key(
+        self, key: tuple[str, str]
+    ) -> StreamStatsAccumulator:
+        accumulator = self._stream_stats.get(key)
+        if accumulator is None:
+            accumulator = StreamStatsAccumulator()
+            self._stream_stats[key] = accumulator
+        return accumulator
+
+    def _clear_playing_stats(self, key: Optional[tuple[str, str]] = None) -> None:
+        if key is None:
+            self._stream_stats.clear()
+            self._latest_stats.clear()
+            return
+        self._stream_stats.pop(key, None)
+        self._latest_stats.pop(key, None)
+
+    def _remove_playing_entry(self, key: tuple[str, str]) -> None:
+        self._playing_channels.pop(key, None)
+        self._clear_playing_stats(key)
+
+    def _handle_bitrate_update(self, key: tuple[str, str], value: float) -> None:
+        accumulator = self._stats_accumulator_for_key(key)
+        stats = accumulator.push_bitrate(value)
+        self._latest_stats[key] = stats
+        self._refresh_playing_channels_panel()
+
+    def _handle_resolution_update(
+        self,
+        key: tuple[str, str],
+        width: Optional[int],
+        height: Optional[int],
+    ) -> None:
+        accumulator = self._stats_accumulator_for_key(key)
+        stats = accumulator.set_resolution(width, height)
+        self._latest_stats[key] = stats
+        self._refresh_playing_channels_panel()
+
     def _find_channel_by_identifier(
         self, provider_name: str, channel_identifier: str
     ) -> Optional[Channel]:
@@ -897,26 +1092,6 @@ class StreamdeckApp(App[None]):
             if channel.url == channel_identifier:
                 return channel
         return None
-
-    def _select_next_playing(self) -> None:
-        if not self._player_handles:
-            self._now_playing = None
-            self._now_playing_key = None
-            self._clear_playing_info()
-            return
-        for key, handle in self._player_handles.items():
-            provider_name, channel_identifier = key
-            channel = self._find_channel_by_identifier(provider_name, channel_identifier)
-            if channel is not None:
-                self._now_playing = (provider_name, channel)
-                self._now_playing_key = key
-                self._player_process = handle.process
-                self._update_playing_info(channel, provider_name)
-                return
-        self._now_playing = None
-        self._now_playing_key = None
-        self._player_process = None
-        self._clear_playing_info()
 
     def _set_status(self, message: str) -> None:
         log.debug("Status update: %s", message)
@@ -945,18 +1120,17 @@ class StreamdeckApp(App[None]):
     def _update_playing_info(
         self, channel: Optional[Channel], provider: Optional[str]
     ) -> None:
-        info = self._query_optional_widget(PlayingChannelInfo)
-        if info is not None:
-            info.provider = provider
-            info.channel = channel
-            info.provider_color = self._provider_color(provider) if provider else None
-            if channel is None:
-                info.stats = None
-        self._set_stop_buttons_enabled(channel is not None)
+        """Compatibility shim for legacy single-channel playback updates."""
+
+        self._refresh_playing_channels_panel()
 
     def _clear_playing_info(self) -> None:
-        self._update_playing_info(None, None)
-        self._clear_stream_stats()
+        """Compatibility shim to clear the legacy playing panel."""
+
+        self._playing_channels.clear()
+        self._clear_playing_stats()
+        self._refresh_playing_channels_panel()
+        self._player_process = None
 
     def _set_stop_buttons_enabled(self, enabled: bool) -> None:
         for selector in ("#channel-stop", "#playing-stop"):
@@ -976,34 +1150,6 @@ class StreamdeckApp(App[None]):
         color = self._provider_color(provider) or "white"
         return f"[{color}]{escape(provider)}[/]"
 
-    def _clear_stream_stats(self) -> None:
-        self._stats_accumulator = None
-        info = self._query_optional_widget(PlayingChannelInfo)
-        if info is not None:
-            info.stats = None
-
-    def _ensure_stats_accumulator(self) -> StreamStatsAccumulator:
-        if self._stats_accumulator is None:
-            self._stats_accumulator = StreamStatsAccumulator()
-        return self._stats_accumulator
-
-    def _emit_stream_stats(self, stats: StreamStats) -> None:
-        info = self._query_optional_widget(PlayingChannelInfo)
-        if info is not None:
-            info.stats = stats
-
-    def _handle_bitrate_update(self, value: float) -> None:
-        accumulator = self._ensure_stats_accumulator()
-        stats = accumulator.push_bitrate(value)
-        self._emit_stream_stats(stats)
-
-    def _handle_resolution_update(
-        self, width: Optional[int], height: Optional[int]
-    ) -> None:
-        accumulator = self._ensure_stats_accumulator()
-        stats = accumulator.set_resolution(width, height)
-        self._emit_stream_stats(stats)
-
     def _start_player_monitor(
         self, key: tuple[str, str], handle: PlayerHandle
     ) -> None:
@@ -1019,7 +1165,7 @@ class StreamdeckApp(App[None]):
         except RuntimeError:  # pragma: no cover - defensive guard for tests
             log.debug("No running event loop available for player monitor")
             return
-        task = loop.create_task(self._monitor_mpv_stats(ipc_path))
+        task = loop.create_task(self._monitor_mpv_stats(key, ipc_path))
         self._player_monitor_tasks[key] = task
 
     def _cancel_player_monitor(self, key: Optional[tuple[str, str]] = None) -> None:
@@ -1038,6 +1184,7 @@ class StreamdeckApp(App[None]):
             for pending_key in list(self._player_handles.keys()):
                 self._cleanup_player_resources(pending_key)
             return
+        self._remove_playing_entry(key)
         handle = self._player_handles.pop(key, None)
         if handle is None:
             return
@@ -1069,7 +1216,9 @@ class StreamdeckApp(App[None]):
         log.warning("Unable to connect to mpv IPC server at %s", ipc_path)
         return None
 
-    async def _monitor_mpv_stats(self, ipc_path: str) -> None:
+    async def _monitor_mpv_stats(
+        self, key: tuple[str, str], ipc_path: str
+    ) -> None:
         if sys.platform == "win32":  # pragma: no cover - platform dependent
             return
         connection = await self._connect_to_mpv_ipc(ipc_path)
@@ -1100,12 +1249,15 @@ class StreamdeckApp(App[None]):
                 name = payload.get("name")
                 data = payload.get("data")
                 if name == "video-bitrate" and isinstance(data, (int, float)):
-                    self._call_on_app_thread(self._handle_bitrate_update, float(data))
+                    self._call_on_app_thread(
+                        self._handle_bitrate_update, key, float(data)
+                    )
                 elif name == "video-params" and isinstance(data, dict):
                     width = data.get("w")
                     height = data.get("h")
                     self._call_on_app_thread(
                         self._handle_resolution_update,
+                        key,
                         width,
                         height,
                     )
@@ -1334,12 +1486,10 @@ class StreamdeckApp(App[None]):
         handle: PlayerHandle,
     ) -> None:
         self._player_handles[key] = handle
-        self._now_playing = (provider_name, channel)
-        self._now_playing_key = key
+        self._playing_channels[key] = (provider_name, channel)
+        self._clear_playing_stats(key)
+        self._refresh_playing_channels_panel()
         self._player_process = handle.process
-        self._clear_stream_stats()
-        self._stats_accumulator = StreamStatsAccumulator()
-        self._update_playing_info(channel, provider_name)
         self._set_status(f"Playing {channel.name} from {provider_name}")
         log.info("Player launched for %s (%s)", channel.name, provider_name)
         self._start_player_monitor(key, handle)
@@ -1356,13 +1506,9 @@ class StreamdeckApp(App[None]):
         self._player_tasks.pop(key, None)
         user_stopped = key in self._player_stop_requested
         self._player_stop_requested.discard(key)
-        if self._now_playing_key == key or (
-            self._now_playing_key is not None
-            and self._now_playing_key not in self._player_handles
-        ):
-            self._select_next_playing()
-        elif not self._player_handles:
-            self._select_next_playing()
+        self._refresh_playing_channels_panel()
+        if not self._player_handles:
+            self._player_process = None
         if user_stopped:
             log.info("Player exited for %s after stop request", channel_name)
             return
@@ -1392,13 +1538,9 @@ class StreamdeckApp(App[None]):
         self._cleanup_player_resources(key)
         self._player_tasks.pop(key, None)
         self._player_stop_requested.discard(key)
-        if self._now_playing_key == key or (
-            self._now_playing_key is not None
-            and self._now_playing_key not in self._player_handles
-        ):
-            self._select_next_playing()
-        elif not self._player_handles:
-            self._select_next_playing()
+        self._refresh_playing_channels_panel()
+        if not self._player_handles:
+            self._player_process = None
         error = f"Failed to launch player for {channel_name} ({provider_name}): {message}"
         self._set_status(error)
         log.error(error)
@@ -2211,24 +2353,27 @@ class StreamdeckApp(App[None]):
             return
         key = self._channel_queue_key(provider_name, channel)
         if key in self._queued_channels:
-            self._queued_channels.remove(key)
+            self._queue_remove(key)
             self._update_channel_item_queue_state(provider_name, channel, False)
             self._set_status(f"Removed {channel.name} from queue")
             log.info(
                 "Removed %s (%s) from playback queue", channel.name, provider_name
             )
         else:
-            self._queued_channels.add(key)
+            self._queue_add(key)
             self._update_channel_item_queue_state(provider_name, channel, True)
             self._set_status(f"Queued {channel.name} for playback")
             log.info("Queued %s (%s) for playback", channel.name, provider_name)
+        self._refresh_selected_channels_panel()
 
     def action_play_channel(self) -> None:
         if self._queued_channels:
-            queued = list(self._queued_channels)
-            self._queued_channels.clear()
             launched = 0
-            for provider_name, channel_identifier in queued:
+            missing_keys: list[tuple[str, str]] = []
+            for key in list(self._queued_order):
+                if key not in self._queued_channels:
+                    continue
+                provider_name, channel_identifier = key
                 channel = self._find_channel_by_identifier(
                     provider_name, channel_identifier
                 )
@@ -2238,10 +2383,21 @@ class StreamdeckApp(App[None]):
                         channel_identifier,
                         provider_name,
                     )
+                    missing_keys.append(key)
+                    continue
+                if key in self._player_handles or key in self._player_tasks:
+                    log.debug(
+                        "Skipping queued channel %s (%s); already launching or playing",
+                        channel_identifier,
+                        provider_name,
+                    )
                     continue
                 self._start_player_for_channel(provider_name, channel)
                 launched += 1
+            if missing_keys:
+                self._queue_remove_many(missing_keys)
             self._refresh_channel_queue_indicators()
+            self._refresh_selected_channels_panel()
             if launched:
                 message = f"Launched {launched} queued channel(s)"
                 self._set_status(message)
@@ -2255,8 +2411,9 @@ class StreamdeckApp(App[None]):
             return
         key = self._channel_queue_key(provider_name, channel)
         if key in self._queued_channels:
-            self._queued_channels.discard(key)
+            self._queue_remove(key)
             self._update_channel_item_queue_state(provider_name, channel, False)
+            self._refresh_selected_channels_panel()
         self._set_status(f"Launching player for {channel.name}…")
         self._start_player_for_channel(provider_name, channel)
 
@@ -2272,9 +2429,11 @@ class StreamdeckApp(App[None]):
             if key in active_keys:
                 keys_to_stop.append(key)
         if not keys_to_stop:
-            if self._now_playing_key is not None and self._now_playing_key in active_keys:
-                keys_to_stop.append(self._now_playing_key)
-            else:
+            if self._playing_channels:
+                keys_to_stop = [
+                    key for key in self._playing_channels.keys() if key in active_keys
+                ]
+            if not keys_to_stop:
                 keys_to_stop = list(active_keys)
         stopped_names: list[str] = []
         for key in keys_to_stop:
@@ -2335,12 +2494,13 @@ class StreamdeckApp(App[None]):
             self._set_status("No provider selected")
             return
         state = self._states.pop(self._active_index)
-        removed_keys = {
+        removed_keys = [
             key for key in self._queued_channels if key[0] == state.config.name
-        }
+        ]
         if removed_keys:
-            self._queued_channels.difference_update(removed_keys)
+            self._queue_remove_many(removed_keys)
             self._refresh_channel_queue_indicators()
+            self._refresh_selected_channels_panel()
         self._config.remove(state.config.name)
         self._save_current_config()
         log.warning("Deleted provider %s", state.config.name)
@@ -2408,10 +2568,10 @@ class StreamdeckApp(App[None]):
                 task.cancel()
         self._player_tasks.clear()
         self._player_stop_requested.clear()
-        self._now_playing = None
-        self._now_playing_key = None
+        self._playing_channels.clear()
+        self._clear_playing_stats()
+        self._refresh_playing_channels_panel()
         self._player_process = None
-        self._clear_playing_info()
 
     def _handle_reload_confirmation(
         self, index: int, confirmed: Optional[bool], elapsed: Optional[timedelta]

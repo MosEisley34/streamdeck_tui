@@ -59,13 +59,15 @@ TabPane {
 }
 
 #channel-info,
-#playing-channel-info,
+#selected-channels,
+#playing-channels,
 #favorites-help {
     padding: 1;
 }
 
 #channel-info,
-#playing-channel-info {
+#selected-channels,
+#playing-channels {
     border: heavy $surface;
     width: 1fr;
     min-height: 5;
