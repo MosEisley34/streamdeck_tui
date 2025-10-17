@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections import deque
 import logging
 from logging import LogRecord
-from typing import List, Optional, Tuple
+from typing import Deque, Iterable, Optional, Tuple
 
 from textual.message import Message
 from textual.widgets import Static
+
+from .logging_utils import register_log_viewer
 
 
 class LogViewer(Static):
@@ -20,30 +23,56 @@ class LogViewer(Static):
         id: Optional[str] = None,
     ) -> None:
         super().__init__("", id=id, markup=False)
-        self._max_lines = max_lines
-        self._lines: List[str] = []
+        self._messages: Deque[str] = deque(maxlen=max_lines)
         self._formatter = logging.Formatter(
             fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
+        self.update(self._render_messages())
+
+    def on_mount(self) -> None:  # pragma: no cover - requires UI integration
+        register_log_viewer(self)
+
+    def on_unmount(self) -> None:  # pragma: no cover - defensive cleanup
+        register_log_viewer(None)
 
     @property
     def lines(self) -> Tuple[str, ...]:
         """Return the currently buffered log lines."""
 
-        return tuple(self._lines)
+        return tuple(self._messages)
+
+    def get_messages(self) -> Tuple[str, ...]:
+        """Alias for :attr:`lines` used by the application code."""
+
+        return self.lines
 
     def clear(self) -> None:
         """Clear all captured log lines."""
 
-        self._lines.clear()
-        self.update("")
+        self._messages.clear()
+        self.update(self._render_messages())
 
-    def _append(self, message: str) -> None:
-        self._lines.append(message)
-        if self._max_lines and len(self._lines) > self._max_lines:
-            self._lines = self._lines[-self._max_lines :]
-        self.update("\n".join(self._lines))
+    def append_message(self, message: str) -> None:
+        """Append a single log *message* to the buffer and refresh display."""
+
+        self._messages.append(message)
+        self.update(self._render_messages())
+
+    def replace_messages(self, messages: Iterable[str]) -> None:
+        """Replace the current buffer with ``messages`` and refresh display."""
+
+        self._messages.clear()
+        for message in messages:
+            self._messages.append(message)
+        self.update(self._render_messages())
+
+    def _render_messages(self) -> str:
+        """Return a textual representation of the buffered log messages."""
+
+        if not self._messages:
+            return "No log messages yet."
+        return "\n".join(self._messages)
 
     def post_message(
         self,
@@ -65,6 +94,6 @@ class LogViewer(Static):
 
         if isinstance(message, LogRecord):
             rendered = formatted_message or self._formatter.format(message)
-            self._append(rendered)
+            self.append_message(rendered)
             return True
         return super().post_message(message)

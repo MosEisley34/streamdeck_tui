@@ -13,10 +13,9 @@ if __name__ == "__main__" and __package__ is None:
 import asyncio
 from asyncio.subprocess import Process
 import threading
-from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable, List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 try:
     from textual import on
@@ -45,8 +44,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
     ) from exc
 
 from .config import AppConfig, FavoriteChannel, ProviderConfig, CONFIG_PATH, save_config
-from .logging_utils import get_logger, register_log_viewer
-from .player import launch_player
+from .logging_utils import get_logger
 from .playlist import Channel, build_search_index, filter_channels, load_playlist
 from .providers import ConnectionStatus, fetch_connection_status
 from .log_viewer import LogViewer
@@ -135,47 +133,6 @@ class StatusBar(Static):
 
     def watch_status(self, status: str) -> None:
         self.update(status)
-
-
-class LogViewer(Static):
-    """Widget that displays recent log messages from the application."""
-
-    def __init__(self, *args, max_lines: int = 200, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self._messages: deque[str] = deque(maxlen=max_lines)
-
-    def on_mount(self) -> None:  # pragma: no cover - exercised via integration test
-        register_log_viewer(self)
-        if not self._messages:
-            self.update("No log messages yet.")
-
-    def on_unmount(self) -> None:  # pragma: no cover - defensive cleanup
-        register_log_viewer(None)
-
-    def append_message(self, message: str) -> None:
-        """Append a single log *message* to the buffer and refresh display."""
-
-        self._messages.append(message)
-        self._render()
-
-    def replace_messages(self, messages: Iterable[str]) -> None:
-        """Replace the buffer with *messages* and refresh display."""
-
-        self._messages.clear()
-        for message in messages:
-            self._messages.append(message)
-        self._render()
-
-    def get_messages(self) -> tuple[str, ...]:
-        """Return a snapshot of the buffered messages."""
-
-        return tuple(self._messages)
-
-    def _render(self) -> None:
-        if self._messages:
-            self.update("\n".join(self._messages))
-        else:
-            self.update("No log messages yet.")
 
 
 class ProviderForm(Static):
