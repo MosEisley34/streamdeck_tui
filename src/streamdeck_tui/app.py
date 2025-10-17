@@ -46,6 +46,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
 
 from .config import AppConfig, FavoriteChannel, ProviderConfig, CONFIG_PATH, save_config
 from .logging_utils import get_logger, register_log_viewer
+from .player import launch_player
 from .playlist import Channel, build_search_index, filter_channels, load_playlist
 from .providers import ConnectionStatus, fetch_connection_status
 from .log_viewer import LogViewer
