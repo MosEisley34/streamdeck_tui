@@ -109,6 +109,44 @@ def test_action_quit_closes_app() -> None:
     assert not is_running
 
 
+def test_provider_actions_require_active_tab() -> None:
+    """Provider shortcuts should be ignored when the Providers tab is inactive."""
+
+    import types
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+
+    provider = ProviderConfig(name="Test", playlist_url="http://example.com")
+    statuses: list[str] = []
+
+    async def run_app() -> tuple[int, int, Optional[str], Optional[str]]:
+        app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
+
+        async with app.run_test() as pilot:
+            def capture_status(self: StreamdeckApp, message: str) -> None:
+                statuses.append(message)
+
+            app._set_status = types.MethodType(capture_status, app)  # type: ignore[assignment]
+            app._set_active_tab("channels")
+            await pilot.pause()
+
+            initial_count = len(app._states)
+            initial_editing = app._editing_name
+
+            app.action_new_provider()
+            app.action_delete_provider()
+            await pilot.pause()
+
+            return initial_count, len(app._states), initial_editing, app._editing_name
+
+    initial_count, final_count, initial_editing, final_editing = asyncio.run(run_app())
+
+    assert initial_count == final_count
+    assert initial_editing == final_editing
+    assert StreamdeckApp._PROVIDERS_TAB_REQUIRED_STATUS in statuses
+
+
 def test_refresh_provider_list_handles_none_previous_index(monkeypatch) -> None:
     """Refreshing the provider list should not compare None indexes."""
 
@@ -501,6 +539,7 @@ def test_apply_filter_streams_channel_batches() -> None:
     app.query_one = types.MethodType(fake_query_one, app)
     app.call_later = types.MethodType(fake_call_later, app)
     app.CHANNEL_RENDER_BATCH_DELAY = 0.01
+    app._active_tab = "channels"
 
     async def run_app() -> None:
         state = app._states[0]
