@@ -124,6 +124,48 @@ def test_refresh_provider_list_handles_none_previous_index(monkeypatch) -> None:
     assert dummy.index is None
 
 
+@pytest.mark.parametrize(
+    ("percent", "expected_colour"),
+    [(0.25, "green"), (0.8, "yellow"), (0.95, "red")],
+)
+def test_connection_usage_bar_colour_thresholds(percent: float, expected_colour: str) -> None:
+    """ConnectionUsageBar should emit coloured markup according to usage."""
+
+    from streamdeck_tui.app import ConnectionUsageBar
+
+    bar = ConnectionUsageBar()
+    active = int(round(percent * 100))
+    bar.update_status(
+        active_connections=active,
+        max_connections=100,
+        percent=percent,
+        message="Peak"
+    )
+
+    markup = bar.last_markup
+    assert f"[{expected_colour}]" in markup
+    assert f"{active}/100" in markup
+    assert "Peak" in markup
+
+
+def test_connection_usage_bar_fallback_when_missing_data() -> None:
+    """The usage bar should fall back to a helpful message when data is missing."""
+
+    from streamdeck_tui.app import ConnectionUsageBar
+
+    bar = ConnectionUsageBar()
+    bar.update_status(
+        active_connections=None,
+        max_connections=None,
+        percent=None,
+        message="Status unavailable"
+    )
+
+    markup = bar.last_markup
+    assert "Status unavailable" in markup
+    assert "[dim]" in markup
+
+
 def test_update_playing_info_handles_missing_widget(monkeypatch) -> None:
     """Updating the playing info should tolerate missing UI widgets."""
 

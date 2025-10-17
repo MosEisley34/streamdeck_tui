@@ -154,6 +154,7 @@ class ProviderState:
     config: ProviderConfig
     channels: Optional[List[Channel]] = None
     connection_status: Optional[ConnectionStatus] = None
+    connection_usage_percent: Optional[float] = None
     last_error: Optional[str] = None
     loading: bool = False
     last_loaded_at: Optional[datetime] = None
@@ -364,6 +365,79 @@ class ProviderProgress(Static):
         self.update(text)
 
 
+class ConnectionUsageBar(Static):
+    """Visualise the connection usage reported by a provider API."""
+
+    BAR_WIDTH = 28
+
+    def __init__(self, *children: Any, **kwargs: Any) -> None:
+        super().__init__(*children, **kwargs)
+        self._last_markup: str = ""
+
+    def on_mount(self) -> None:  # pragma: no cover - relies on runtime styles
+        self.show_unavailable()
+
+    @property
+    def last_markup(self) -> str:
+        return self._last_markup
+
+    @staticmethod
+    def _clamp_percent(percent: float) -> float:
+        return max(0.0, min(percent, 1.0))
+
+    @staticmethod
+    def _color_for_percent(percent: float) -> str:
+        if percent >= 0.9:
+            return "red"
+        if percent >= 0.75:
+            return "yellow"
+        return "green"
+
+    def show_unavailable(self, message: str = "Connection status unavailable") -> None:
+        markup = f"[dim]{escape(message)}[/dim]"
+        self._last_markup = markup
+        self.update(markup)
+
+    def update_status(
+        self,
+        *,
+        active_connections: Optional[int],
+        max_connections: Optional[int],
+        percent: Optional[float],
+        message: Optional[str] = None,
+    ) -> None:
+        if (
+            active_connections is None
+            or max_connections is None
+            or max_connections <= 0
+        ):
+            fallback = message or "Connection status unavailable"
+            self.show_unavailable(fallback)
+            return
+
+        usage = (
+            self._clamp_percent(percent)
+            if percent is not None
+            else self._clamp_percent(active_connections / max_connections)
+        )
+        filled = int(round(usage * self.BAR_WIDTH))
+        filled = max(0, min(self.BAR_WIDTH, filled))
+        empty = self.BAR_WIDTH - filled
+        color = self._color_for_percent(usage)
+        bar = f"[{color}]{'█' * filled}{'░' * empty}[/]"
+        percent_label = int(round(usage * 100))
+        header = (
+            f"[b]{active_connections}/{max_connections} connections"
+            f" ({percent_label}%)[/b]"
+        )
+        if message:
+            markup = f"{header}\n{bar}\n[dim]{escape(message)}[/dim]"
+        else:
+            markup = f"{header}\n{bar}"
+        self._last_markup = markup
+        self.update(markup)
+
+
 class ProviderForm(Static):
     """Form used to edit provider configuration."""
 
@@ -456,6 +530,12 @@ TabPane {
 }
 
 #provider-progress {
+    border: heavy $surface;
+    padding: 0 1;
+    min-height: 3;
+}
+
+#connection-usage {
     border: heavy $surface;
     padding: 0 1;
     min-height: 3;
@@ -598,6 +678,7 @@ class StreamdeckApp(App[None]):
                 with Vertical(id="providers-pane"):
                     yield Label("Providers", id="providers-title")
                     yield ListView(id="provider-list")
+                    yield ConnectionUsageBar(id="connection-usage")
                     yield ProviderProgress(id="provider-progress")
                     with Horizontal(id="provider-actions"):
                         yield Button("New", id="provider-new", variant="primary")
@@ -1164,6 +1245,7 @@ class StreamdeckApp(App[None]):
         else:
             list_view.index = None
         self._update_provider_progress_widget()
+        self._update_connection_usage_widget()
 
     def _update_provider_progress_widget(
         self, state: Optional[ProviderState] = None
@@ -1182,6 +1264,28 @@ class StreamdeckApp(App[None]):
             loaded=state.loading_bytes_read,
             total=state.loading_bytes_total,
             markup=True,
+        )
+
+    def _update_connection_usage_widget(
+        self, state: Optional[ProviderState] = None
+    ) -> None:
+        widget = self._query_optional_widget("#connection-usage", ConnectionUsageBar)
+        if widget is None:
+            return
+        if state is None:
+            state = self._current_state()
+        if state is None:
+            widget.show_unavailable("No provider selected")
+            return
+        status = state.connection_status
+        if status is None:
+            widget.show_unavailable("Connection status unavailable")
+            return
+        widget.update_status(
+            active_connections=status.active_connections,
+            max_connections=status.max_connections,
+            percent=state.connection_usage_percent,
+            message=status.message,
         )
 
     def _clear_channels(self, message: str = "No provider selected") -> None:
@@ -1457,6 +1561,7 @@ class StreamdeckApp(App[None]):
         state.last_error = None
         state.channels = None
         state.connection_status = None
+        state.connection_usage_percent = None
         state.loading_progress = 0.0
         state.loading_bytes_read = 0
         state.loading_bytes_total = None
@@ -1465,6 +1570,7 @@ class StreamdeckApp(App[None]):
         self._refresh_provider_list()
         self._set_status(f"Loading channels for {state.config.name}…")
         self._update_provider_progress_widget(state)
+        self._update_connection_usage_widget(state)
         self._worker = self.run_worker(self._fetch_provider(state), name=f"provider:{state.config.name}")
 
     async def _fetch_provider(self, state: ProviderState) -> None:
@@ -1524,11 +1630,13 @@ class StreamdeckApp(App[None]):
         state.loading_progress = 0.0
         state.loading_bytes_read = 0
         state.loading_bytes_total = None
+        state.connection_usage_percent = None
         if state is self._current_state():
             self._clear_channels(f"Failed to load channels: {message}")
         self._refresh_provider_list()
         self._set_status(f"Failed to load {state.config.name}: {message}")
         log.error("Provider %s failed to load: %s", state.config.name, message)
+        self._update_connection_usage_widget(state)
 
     def _handle_channels_loaded(self, state: ProviderState, channels: List[Channel]) -> None:
         state.loading = False
@@ -1552,9 +1660,22 @@ class StreamdeckApp(App[None]):
             )
         self._refresh_provider_list()
         self._update_provider_progress_widget(state)
+        self._update_connection_usage_widget(state)
+        self._update_connection_usage_widget(state)
 
     def _handle_status_success(self, state: ProviderState, status: ConnectionStatus) -> None:
         state.connection_status = status
+        if (
+            status.active_connections is not None
+            and status.max_connections is not None
+            and status.max_connections > 0
+        ):
+            state.connection_usage_percent = max(
+                0.0,
+                min(status.active_connections / status.max_connections, 1.0),
+            )
+        else:
+            state.connection_usage_percent = None
         state.last_error = None
         log.info(
             "Status updated for %s: %s",
@@ -1565,9 +1686,11 @@ class StreamdeckApp(App[None]):
             self._set_status(f"{state.config.name}: {status.as_label()}")
         self._refresh_provider_list()
         self._update_provider_progress_widget(state)
+        self._update_connection_usage_widget(state)
 
     def _handle_status_error(self, state: ProviderState, message: str) -> None:
         state.connection_status = None
+        state.connection_usage_percent = None
         state.last_error = message
         log.warning(
             "Failed to retrieve status for %s: %s",
@@ -1578,6 +1701,7 @@ class StreamdeckApp(App[None]):
             self._set_status(f"Failed to fetch status: {message}")
         self._refresh_provider_list()
         self._update_provider_progress_widget(state)
+        self._update_connection_usage_widget(state)
 
     def _select_provider(self, index: int) -> None:
         if not (0 <= index < len(self._states)):
