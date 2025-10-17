@@ -156,6 +156,7 @@ class ProviderState:
     loading_progress: float = 0.0
     loading_bytes_read: int = 0
     loading_bytes_total: Optional[int] = None
+    last_channel_count: Optional[int] = None
 
 
 class ChannelListItem(ListItem):
@@ -1106,19 +1107,38 @@ class StreamdeckApp(App[None]):
             self._set_stop_buttons_enabled(False)
 
     def _provider_label(self, state: ProviderState) -> str:
+        details: list[str] = []
+
+        def add_detail(fragment: Optional[str]) -> None:
+            if fragment:
+                details.append(escape(fragment))
+
         if state.loading:
             percent = int(round(max(0.0, min(state.loading_progress, 1.0)) * 100))
-            detail = f"loading {percent}%"
+            add_detail(f"loading {percent}%")
         elif state.last_error:
-            detail = f"error: {state.last_error}"
-        elif state.connection_status:
-            detail = state.connection_status.as_label()
+            add_detail(f"error: {state.last_error}")
+
+        if state.last_channel_count is not None:
+            add_detail(f"{state.last_channel_count} channels")
         elif state.channels is not None:
-            detail = f"{len(state.channels)} channels"
-        else:
-            detail = "not loaded"
+            add_detail(f"{len(state.channels)} channels")
+
+        if state.connection_status:
+            status = state.connection_status
+            if status.active_connections is not None:
+                add_detail(f"active {status.active_connections}")
+            if status.max_connections is not None:
+                add_detail(f"max {status.max_connections}")
+            if status.message:
+                add_detail(status.message)
+
+        if not details:
+            add_detail("not loaded")
+
         provider_markup = self._provider_markup(state.config.name)
-        return f"{provider_markup} ([dim]{escape(detail)}[/dim])"
+        joined = " • ".join(details)
+        return f"{provider_markup} ([dim]{joined}[/dim])"
 
     def _refresh_provider_list(self) -> None:
         log.debug("Refreshing provider list UI")
@@ -1510,6 +1530,7 @@ class StreamdeckApp(App[None]):
         state.search_index = build_search_index(channels)
         state.last_loaded_at = datetime.now(tz=timezone.utc)
         state.loading_progress = 1.0
+        state.last_channel_count = len(channels)
         if state.loading_bytes_total is None:
             state.loading_bytes_total = state.loading_bytes_read
         log.info(

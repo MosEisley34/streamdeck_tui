@@ -184,6 +184,82 @@ def test_load_provider_skips_recent_refresh(monkeypatch) -> None:
     )
 
 
+def test_provider_label_includes_channels_and_status(monkeypatch) -> None:
+    """Provider labels should show counts alongside all status details."""
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel
+    from streamdeck_tui.providers import ConnectionStatus
+
+    provider = ProviderConfig(name="Demo", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
+
+    monkeypatch.setattr(StreamdeckApp, "_refresh_provider_list", lambda self: None, raising=False)
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "_update_provider_progress_widget",
+        lambda self, state=None: None,
+        raising=False,
+    )
+
+    app._active_index = None
+    state = app._states[0]
+    channels = [
+        Channel(name="Demo 1", url="http://example.com/1"),
+        Channel(name="Demo 2", url="http://example.com/2"),
+    ]
+    app._handle_channels_loaded(state, channels)
+    state.connection_status = ConnectionStatus(
+        active_connections=3, max_connections=5, message="All good"
+    )
+
+    label = app._provider_label(state)
+
+    assert "2 channels" in label
+    assert "active 3" in label
+    assert "max 5" in label
+    assert "All good" in label
+
+    state.loading = True
+    state.loading_progress = 0.5
+    loading_label = app._provider_label(state)
+    assert "loading 50%" in loading_label
+    assert loading_label.index("loading 50%") < loading_label.index("2 channels")
+
+
+def test_provider_last_channel_count_persists_after_error(monkeypatch) -> None:
+    """The last successful channel count should survive load failures."""
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel
+
+    provider = ProviderConfig(name="Demo", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
+
+    monkeypatch.setattr(StreamdeckApp, "_refresh_provider_list", lambda self: None, raising=False)
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "_update_provider_progress_widget",
+        lambda self, state=None: None,
+        raising=False,
+    )
+
+    app._active_index = None
+    state = app._states[0]
+    channels = [Channel(name="Demo", url="http://example.com/1")]
+    app._handle_channels_loaded(state, channels)
+    assert state.last_channel_count == 1
+
+    app._handle_provider_error(state, "boom")
+
+    assert state.last_channel_count == 1
+    label = app._provider_label(state)
+    assert "error: boom" in label
+    assert "1 channels" in label
+
+
 def test_action_reload_provider_requires_confirmation(monkeypatch) -> None:
     """Manual reloads within the guard window should prompt for confirmation."""
 
