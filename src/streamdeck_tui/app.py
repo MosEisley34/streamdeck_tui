@@ -23,6 +23,7 @@ from typing import Any, Callable, List, Optional, Sequence
 
 try:
     from textual import on
+    from textual.actions import SkipAction
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Horizontal, Vertical
@@ -41,6 +42,7 @@ try:
         TabPane,
         TabbedContent,
     )
+    from textual.widgets._tabbed_content import ContentTabs
 except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
     raise ModuleNotFoundError(
         "The 'textual' package is required to run streamdeck_tui. "
@@ -531,6 +533,10 @@ class StreamdeckApp(App[None]):
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit"),
         Binding("q", "quit", "Quit"),
+        Binding("f1", "switch_tab('providers')", "Providers"),
+        Binding("f2", "switch_tab('channels')", "Channels"),
+        Binding("f3", "switch_tab('favorites')", "Favorites"),
+        Binding("f4", "switch_tab('logs')", "Logs"),
         Binding("/", "focus_search", "Search"),
         Binding("escape", "clear_search", "Clear search"),
         Binding("n", "new_provider", "New provider"),
@@ -541,7 +547,9 @@ class StreamdeckApp(App[None]):
         Binding("s", "stop_channel", "Stop"),
         Binding("f", "toggle_favorite", "Favorite"),
         Binding("ctrl+shift+p", "probe_player", "Probe player"),
+        Binding("down", "focus_active_tab_content", show=False, priority=True),
     ]
+    _PROVIDERS_TAB_REQUIRED_STATUS = "Switch to the Providers tab to manage providers"
 
     def __init__(
         self,
@@ -560,7 +568,7 @@ class StreamdeckApp(App[None]):
         )
         self.filtered_channels: List[Channel] = []
         self._favorite_entries: list[FavoriteChannel] = list(config.favorites)
-        self._active_tab: str = "channels"
+        self._active_tab: str = "providers"
         self._player_process: Optional[Process] = None
         self._player_handle: Optional[PlayerHandle] = None
         self._player_task: Optional[asyncio.Task[None]] = None
@@ -902,17 +910,11 @@ class StreamdeckApp(App[None]):
                 pass
 
     def _update_tab_buttons(self) -> None:
-        """Refresh the visual state of the tab controls."""
+        """Refresh tab-adjacent controls (search field enablement)."""
 
-        try:
-            channels_button = self.query_one("#tab-channels", Button)
-            favorites_button = self.query_one("#tab-favorites", Button)
-            search_input = self.query_one("#search", Input)
-        except Exception:  # pragma: no cover - defensive guard for tests
-            return
-        channels_button.variant = "primary" if self._active_tab == "channels" else "default"
-        favorites_button.variant = "primary" if self._active_tab == "favorites" else "default"
-        search_input.disabled = self._active_tab != "channels"
+        search_input = self._query_optional_widget("#search", Input)
+        if search_input is not None:
+            search_input.disabled = self._active_tab != "channels"
 
     def _favorite_to_channel(self, favorite: FavoriteChannel) -> Channel:
         """Convert a stored favorite entry back into a channel."""
@@ -950,10 +952,54 @@ class StreamdeckApp(App[None]):
         )
         self._set_status(f"Showing {len(self._favorite_entries)} favorite channel(s)")
 
-    def _set_active_tab(self, tab: str) -> None:
-        if tab not in {"channels", "favorites"}:
+    def _focus_tab_content(self, tab: str) -> None:
+        if tab == "providers":
+            if self._states:
+                list_view = self._query_optional_widget("#provider-list", ListView)
+                if list_view is not None:
+                    list_view.focus()
+                    return
+            form = self._query_optional_widget(ProviderForm)
+            if form is not None:
+                form.focus_name()
+        elif tab == "channels":
+            if not self._channel_list_ready:
+                self._pending_channel_operations.append(
+                    lambda: self._focus_tab_content("channels")
+                )
+                return
+            list_view = self._query_optional_widget("#channel-list", ListView)
+            if list_view is not None:
+                list_view.focus()
+        elif tab == "favorites":
+            list_view = self._query_optional_widget("#favorites-list", ListView)
+            if list_view is not None:
+                list_view.focus()
+        elif tab == "logs":
+            viewer = self._query_optional_widget(LogViewer)
+            if viewer is not None:
+                viewer.focus()
+
+    def _require_active_tab(self, tab: str, message: str) -> bool:
+        if self._active_tab != tab:
+            self._set_status(message)
+            return False
+        return True
+
+    def _set_active_tab(
+        self, tab: str, *, update_widget: bool = True, focus: bool = True
+    ) -> None:
+        valid_tabs = {"providers", "channels", "favorites", "logs"}
+        if tab not in valid_tabs:
             return
+        pane_id = f"{tab}-tab"
+        if update_widget:
+            tabbed = self._query_optional_widget("#main-tabs", TabbedContent)
+            if tabbed is not None and tabbed.active != pane_id:
+                tabbed.active = pane_id
         if self._active_tab == tab:
+            if focus:
+                self._focus_tab_content(tab)
             return
         self._active_tab = tab
         if tab != "channels":
@@ -965,8 +1011,10 @@ class StreamdeckApp(App[None]):
             except Exception:  # pragma: no cover - tests without UI
                 query = ""
             self._apply_filter(query)
-        else:
+        elif tab == "favorites":
             self._refresh_favorites_view()
+        if focus:
+            self._focus_tab_content(tab)
 
     def _get_selected_entry(
         self,
@@ -1608,6 +1656,15 @@ class StreamdeckApp(App[None]):
         save_config(self._config, self._config_path)
         self._refresh_favorites_view()
 
+    def action_switch_tab(self, tab: str) -> None:
+        self._set_active_tab(tab)
+
+    def action_focus_active_tab_content(self) -> None:
+        focused = self.focused
+        if not isinstance(focused, ContentTabs):
+            raise SkipAction()
+        self._focus_tab_content(self._active_tab)
+
     def action_focus_search(self) -> None:
         log.debug("Focusing search input")
         if self._active_tab != "channels":
@@ -1622,6 +1679,10 @@ class StreamdeckApp(App[None]):
             self._apply_filter("")
 
     def action_new_provider(self) -> None:
+        if not self._require_active_tab(
+            "providers", self._PROVIDERS_TAB_REQUIRED_STATUS
+        ):
+            return
         form = self.query_one(ProviderForm)
         form.clear()
         form.focus_name()
@@ -1630,6 +1691,10 @@ class StreamdeckApp(App[None]):
         log.info("Creating a new provider entry")
 
     def action_save_provider(self) -> None:
+        if not self._require_active_tab(
+            "providers", self._PROVIDERS_TAB_REQUIRED_STATUS
+        ):
+            return
         self._save_provider()
 
     def action_probe_player(self) -> None:
@@ -1769,6 +1834,10 @@ class StreamdeckApp(App[None]):
             self._save_current_config()
 
     def action_delete_provider(self) -> None:
+        if not self._require_active_tab(
+            "providers", self._PROVIDERS_TAB_REQUIRED_STATUS
+        ):
+            return
         if self._active_index is None or not self._states:
             self._set_status("No provider selected")
             return
@@ -1797,6 +1866,10 @@ class StreamdeckApp(App[None]):
             self.query_one(ProviderForm).focus_name()
 
     def action_reload_provider(self) -> None:
+        if not self._require_active_tab(
+            "providers", self._PROVIDERS_TAB_REQUIRED_STATUS
+        ):
+            return
         if self._active_index is None:
             self._set_status("No provider selected")
             return
@@ -1891,13 +1964,14 @@ class StreamdeckApp(App[None]):
     def _on_channel_favorite(self, _: Button.Pressed) -> None:
         self.action_toggle_favorite()
 
-    @on(Button.Pressed, "#tab-channels")
-    def _on_tab_channels(self, _: Button.Pressed) -> None:
-        self._set_active_tab("channels")
-
-    @on(Button.Pressed, "#tab-favorites")
-    def _on_tab_favorites(self, _: Button.Pressed) -> None:
-        self._set_active_tab("favorites")
+    @on(TabbedContent.TabActivated, "#main-tabs")
+    def _on_main_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
+        pane_id = (event.pane.id or "").removesuffix("-tab")
+        if not pane_id:
+            return
+        self._set_active_tab(pane_id, update_widget=False)
 
     @on(ListView.Highlighted, "#provider-list")
     def _on_provider_highlighted(self, event: ListView.Highlighted) -> None:

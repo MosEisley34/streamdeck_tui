@@ -98,6 +98,11 @@ Keyboard shortcuts:
 
 | Key | Action |
 | --- | --- |
+| `F1` | Switch to the Providers tab |
+| `F2` | Switch to the Channel browser tab |
+| `F3` | Switch to the Favorites tab |
+| `F4` | Switch to the Logs tab |
+| `↓` | Move focus from the tab strip into the active tab content |
 | `q` | Quit |
 | `/` | Focus the search box |
 | `Esc` | Clear the current channel search |
@@ -105,6 +110,10 @@ Keyboard shortcuts:
 | `Ctrl+S` | Save provider changes |
 | `Delete` | Remove the selected provider |
 | `r` | Reload playlist and status for the selected provider |
+
+Pressing the arrow-down key while a tab button is focused jumps directly into the
+primary widget for that tab (provider list, channel list, favorites list, or the
+log viewer), so you can immediately use the arrow keys to navigate.
 
 Provider changes are written to disk immediately, and selecting a provider triggers background tasks that fetch its playlist and
 optional status API without blocking the interface. Channels appear in the right pane with metadata and instantaneous filtering.
