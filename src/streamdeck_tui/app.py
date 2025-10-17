@@ -96,6 +96,15 @@ class ChannelListItem(ListItem):
         self.channel = channel
 
 
+class ChannelListView(ListView):
+    """List view that notifies the app when it is mounted."""
+
+    def on_mount(self) -> None:  # pragma: no cover - relies on Textual runtime
+        app = self.app
+        if isinstance(app, StreamdeckApp):
+            app._mark_channel_list_ready()
+
+
 class FavoriteListItem(ListItem):
     """Render a favorited channel in the list."""
 
@@ -318,6 +327,8 @@ class StreamdeckApp(App[None]):
     CSS_PATH: list[str] = []
     CHANNEL_RENDER_BATCH_SIZE = 200
     CHANNEL_RENDER_BATCH_DELAY = 0.001
+    CHANNEL_WINDOW_SIZE = 200
+    CHANNEL_WINDOW_MARGIN = 40
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit"),
         Binding("q", "quit", "Quit"),
@@ -360,6 +371,9 @@ class StreamdeckApp(App[None]):
         self._channel_render_generation: int = 0
         self._channel_rendered_count: int = 0
         self._channel_first_batch_size: int = 0
+        self._channel_list_ready: bool = False
+        self._pending_channel_operations: list[Callable[[], None]] = []
+        self._channel_window_start: int = 0
         log.debug("Inline stylesheet active (%d characters)", len(self.CSS))
         log.info(
             "StreamdeckApp initialized with %d provider(s); config path=%s",
@@ -377,11 +391,15 @@ class StreamdeckApp(App[None]):
                     with Horizontal(id="provider-actions"):
                         yield Button("New", id="provider-new", variant="primary")
                         yield Button("Delete", id="provider-delete", variant="warning")
+                    yield Static(
+                        f"Add or remove providers below. Changes are saved to config.yaml ({self._config_destination_label()}).",
+                        id="providers-help",
+                    )
                     yield ProviderForm(id="provider-form")
             with TabPane("Channel browser", id="channels-tab"):
                 with Vertical(id="channels-pane"):
                     yield Input(placeholder="Search channels…", id="search")
-                    yield ListView(id="channel-list")
+                    yield ChannelListView(id="channel-list")
                     with Horizontal(id="channel-info-panels"):
                         yield ChannelInfo(id="channel-info")
                         yield PlayingChannelInfo(id="playing-channel-info")
@@ -418,6 +436,18 @@ class StreamdeckApp(App[None]):
         self._update_tab_buttons()
         self._refresh_favorites_view()
 
+    def _mark_channel_list_ready(self) -> None:
+        if self._channel_list_ready:
+            return
+        self._channel_list_ready = True
+        pending = self._pending_channel_operations
+        self._pending_channel_operations = []
+        for callback in pending:
+            try:
+                callback()
+            except Exception:  # pragma: no cover - diagnostic logging only
+                log.exception("Deferred channel operation failed")
+
     def _current_state(self) -> Optional[ProviderState]:
         if self._active_index is None:
             return None
@@ -428,6 +458,9 @@ class StreamdeckApp(App[None]):
     def _set_status(self, message: str) -> None:
         log.debug("Status update: %s", message)
         self.query_one(StatusBar).status = message
+
+    def _config_destination_label(self) -> str:
+        return str(self._config_path)
 
     def _update_active_channel_info(
         self, channel: Optional[Channel], provider: Optional[str]
@@ -481,7 +514,7 @@ class StreamdeckApp(App[None]):
         if self._active_tab != "favorites":
             return
         try:
-            list_view = self.query_one("#channel-list", ListView)
+            list_view = self.query_one("#favorites-list", ListView)
         except Exception:  # pragma: no cover - defensive for tests without UI
             return
         list_view.clear()
@@ -521,17 +554,27 @@ class StreamdeckApp(App[None]):
     ) -> tuple[Optional[str], Optional[Channel], Optional[FavoriteChannel]]:
         """Return information about the currently selected entry."""
 
-        list_view = self.query_one("#channel-list", ListView)
+        if self._active_tab == "channels":
+            try:
+                list_view = self.query_one("#channel-list", ListView)
+            except Exception:
+                return None, None, None
+        else:
+            try:
+                list_view = self.query_one("#favorites-list", ListView)
+            except Exception:
+                return None, None, None
         index = getattr(list_view, "index", None)
         if index is None:
             return None, None, None
         if self._active_tab == "channels":
-            if not self.filtered_channels or not (0 <= index < len(self.filtered_channels)):
+            global_index = self._channel_window_start + index
+            if not self.filtered_channels or not (0 <= global_index < len(self.filtered_channels)):
                 return None, None, None
             state = self._current_state()
             if state is None:
                 return None, None, None
-            return state.config.name, self.filtered_channels[index], None
+            return state.config.name, self.filtered_channels[global_index], None
         if not self._favorite_entries or not (0 <= index < len(self._favorite_entries)):
             return None, None, None
         favorite = self._favorite_entries[index]
@@ -672,9 +715,15 @@ class StreamdeckApp(App[None]):
         self._cancel_channel_render()
         if self._active_tab != "channels":
             return
+        if not self._channel_list_ready:
+            self._pending_channel_operations.append(
+                lambda message=message: self._clear_channels(message)
+            )
+            return
         list_view = self.query_one("#channel-list", ListView)
         list_view.clear()
         list_view.append(ListItem(Label(message)))
+        list_view.index = 0
 
     def _apply_filter(self, query: str) -> None:
         log.debug("Applying channel filter: %s", query)
@@ -684,9 +733,15 @@ class StreamdeckApp(App[None]):
             self._clear_active_channel_info()
             self.filtered_channels = []
             if self._active_tab == "channels":
+                if not self._channel_list_ready:
+                    self._pending_channel_operations.append(
+                        lambda query=query: self._apply_filter(query)
+                    )
+                    return
                 list_view = self.query_one("#channel-list", ListView)
                 list_view.clear()
                 list_view.append(ListItem(Label("No provider selected")))
+                list_view.index = 0
             return
         if state.channels is None:
             if state.loading:
@@ -696,25 +751,35 @@ class StreamdeckApp(App[None]):
             self._clear_active_channel_info()
             self.filtered_channels = []
             if self._active_tab == "channels":
+                if not self._channel_list_ready:
+                    self._pending_channel_operations.append(
+                        lambda query=query: self._apply_filter(query)
+                    )
+                    return
                 list_view = self.query_one("#channel-list", ListView)
                 list_view.clear()
                 list_view.append(ListItem(Label(message)))
+                list_view.index = 0
             return
         channels = filter_channels(state.channels, query, state.search_index)
         self.filtered_channels = channels
         if self._active_tab == "channels":
+            if not self._channel_list_ready:
+                self._pending_channel_operations.append(
+                    lambda query=query: self._apply_filter(query)
+                )
+                return
             if not channels:
                 list_view = self.query_one("#channel-list", ListView)
                 list_view.clear()
                 list_view.append(ListItem(Label("No channels found")))
                 self._clear_active_channel_info()
+                list_view.index = 0
             else:
                 self._start_channel_render(channels)
         self._set_status(f"Showing {len(channels)} channels for {state.config.name}")
 
     def _start_channel_render(self, channels: Sequence[Channel]) -> None:
-        """Launch an asynchronous renderer for the supplied ``channels``."""
-
         if not channels:
             return
         state = self._current_state()
@@ -722,26 +787,18 @@ class StreamdeckApp(App[None]):
         self._channel_render_generation += 1
         self._channel_rendered_count = 0
         self._channel_first_batch_size = 0
-        generation = self._channel_render_generation
+        self._channel_window_start = 0
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             log.debug("Rendering channels synchronously outside the event loop")
-            list_view = self.query_one("#channel-list", ListView)
-            batch_context = (
-                list_view.batch_update()
-                if hasattr(list_view, "batch_update")
-                else nullcontext()
-            )
-            with batch_context:
-                list_view.clear()
-                for channel in channels:
-                    list_view.append(ChannelListItem(channel))
-            list_view.index = 0
-            self._update_active_channel_info(channels[0], provider_name)
+            self._render_channel_window_for_start(0)
             self._channel_rendered_count = len(channels)
-            self._channel_first_batch_size = len(channels)
+            self._channel_first_batch_size = min(
+                len(channels), self.CHANNEL_RENDER_BATCH_SIZE
+            )
             return
+        generation = self._channel_render_generation
         task = loop.create_task(
             self._render_channel_list(channels, generation, provider_name)
         )
@@ -767,6 +824,7 @@ class StreamdeckApp(App[None]):
         self._channel_render_generation += 1
         self._channel_rendered_count = 0
         self._channel_first_batch_size = 0
+        self._channel_window_start = 0
 
     async def _render_channel_list(
         self,
@@ -774,15 +832,74 @@ class StreamdeckApp(App[None]):
         generation: int,
         provider_name: Optional[str],
     ) -> None:
-        """Render ``channels`` to the list view in small batches."""
-
-        list_view = self.query_one("#channel-list", ListView)
-        clear_event = asyncio.Event()
-
-        def clear_list() -> None:
+        if self._active_tab != "channels":
+            return
+        _ = provider_name  # retained for compatibility with tests and logging hooks
+        if self.filtered_channels is not channels:
+            self.filtered_channels = list(channels)
+        self._render_channel_window_for_start(0)
+        if generation != self._channel_render_generation:
+            return
+        total = len(channels)
+        batch_size = self.CHANNEL_RENDER_BATCH_SIZE or len(channels)
+        delay = self.CHANNEL_RENDER_BATCH_DELAY
+        for start in range(0, total, batch_size):
             if generation != self._channel_render_generation:
-                clear_event.set()
                 return
+            end = min(start + batch_size, total)
+            batch_length = end - start
+            if start == 0:
+                self._channel_first_batch_size = batch_length
+            self._channel_rendered_count = end
+            if delay:
+                await asyncio.sleep(delay)
+            else:
+                await asyncio.sleep(0)
+        if generation == self._channel_render_generation:
+            self._channel_rendered_count = total
+
+    def _render_channel_window_for_start(
+        self,
+        start: int,
+        *,
+        selected_global_index: Optional[int] = None,
+    ) -> None:
+        if self._active_tab != "channels":
+            return
+        total = len(self.filtered_channels)
+        if total == 0:
+            self._channel_window_start = 0
+            try:
+                list_view = self.query_one("#channel-list", ListView)
+            except Exception:
+                if not self._channel_list_ready:
+                    self._pending_channel_operations.append(
+                        lambda: self._render_channel_window_for_start(0, selected_global_index=None)
+                    )
+                return
+            list_view.clear()
+            list_view.index = None
+            self._clear_active_channel_info()
+            return
+        max_start = max(0, total - self.CHANNEL_WINDOW_SIZE)
+        start = max(0, min(start, max_start))
+        end = min(start + self.CHANNEL_WINDOW_SIZE, total)
+        provider_state = self._current_state()
+        provider_name = provider_state.config.name if provider_state else None
+
+        try:
+            list_view = self.query_one("#channel-list", ListView)
+        except Exception:
+            if not self._channel_list_ready:
+                self._pending_channel_operations.append(
+                    lambda start=start, selected_global_index=selected_global_index: self._render_channel_window_for_start(
+                        start, selected_global_index=selected_global_index
+                    )
+                )
+            return
+
+        def render_window() -> None:
+            channels_slice = self.filtered_channels[start:end]
             batch_context = (
                 list_view.batch_update()
                 if hasattr(list_view, "batch_update")
@@ -790,61 +907,42 @@ class StreamdeckApp(App[None]):
             )
             with batch_context:
                 list_view.clear()
-            self._clear_active_channel_info()
-            self._channel_rendered_count = 0
-            self._channel_first_batch_size = 0
-            clear_event.set()
-
-        self.call_later(clear_list)
-        try:
-            await clear_event.wait()
-        except asyncio.CancelledError:
-            raise
-
-        if generation != self._channel_render_generation:
-            return
-
-        batch_size = self.CHANNEL_RENDER_BATCH_SIZE
-        first_batch = True
-
-        for start in range(0, len(channels), batch_size):
-            batch = channels[start : start + batch_size]
-            batch_event = asyncio.Event()
-
-            def append_batch(batch: Sequence[Channel] = batch) -> None:
-                nonlocal first_batch
-                if generation != self._channel_render_generation:
-                    batch_event.set()
-                    return
-                batch_context = (
-                    list_view.batch_update()
-                    if hasattr(list_view, "batch_update")
-                    else nullcontext()
-                )
-                with batch_context:
-                    for channel in batch:
-                        list_view.append(ChannelListItem(channel))
-                self._channel_rendered_count += len(batch)
-                if first_batch:
-                    self._channel_first_batch_size = len(batch)
-                    list_view.index = 0
-                    self._update_active_channel_info(batch[0], provider_name)
-                    first_batch = False
-                batch_event.set()
-
-            self.call_later(append_batch)
-            try:
-                await batch_event.wait()
-            except asyncio.CancelledError:
-                raise
-            if generation != self._channel_render_generation:
-                return
-            if start != 0:
-                delay = self.CHANNEL_RENDER_BATCH_DELAY
-                if delay:
-                    await asyncio.sleep(delay)
+                for channel in channels_slice:
+                    list_view.append(ChannelListItem(channel))
+            target_index = selected_global_index
+            if target_index is None:
+                if getattr(list_view, "index", None) is None:
+                    target_index = start
                 else:
-                    await asyncio.sleep(0)
+                    target_index = self._channel_window_start + list_view.index
+            target_index = max(start, min(end - 1, target_index)) if channels_slice else None
+            if target_index is not None:
+                list_view.index = target_index - start
+                channel = self.filtered_channels[target_index]
+                self._update_active_channel_info(channel, provider_name)
+            else:
+                list_view.index = None
+                self._clear_active_channel_info()
+
+        self._channel_window_start = start
+        render_window()
+
+    def _maybe_shift_channel_window(self, global_index: int) -> None:
+        total = len(self.filtered_channels)
+        if total <= self.CHANNEL_WINDOW_SIZE:
+            return
+        margin = min(self.CHANNEL_WINDOW_MARGIN, self.CHANNEL_WINDOW_SIZE // 2)
+        start = self._channel_window_start
+        end = start + self.CHANNEL_WINDOW_SIZE
+        max_start = max(0, total - self.CHANNEL_WINDOW_SIZE)
+        if global_index < start + margin and start > 0:
+            new_start = max(0, global_index - margin)
+            if new_start != start:
+                self._render_channel_window_for_start(new_start, selected_global_index=global_index)
+        elif global_index >= end - margin and start < max_start:
+            new_start = min(max_start, global_index - self.CHANNEL_WINDOW_SIZE + margin + 1)
+            if new_start != start:
+                self._render_channel_window_for_start(new_start, selected_global_index=global_index)
 
     def _stop_worker(self) -> None:
         if self._worker and not self._worker.is_finished:
@@ -1040,7 +1138,9 @@ class StreamdeckApp(App[None]):
             self._save_current_config()
             self._refresh_provider_list()
             self._select_provider(self._active_index)
-            self._set_status(f"Added provider {provider.name}")
+            self._set_status(
+                f"Added provider {provider.name} (saved to {self._config_destination_label()})"
+            )
             log.info("Added provider %s", provider.name)
         else:
             if self._active_index is None:
@@ -1063,7 +1163,9 @@ class StreamdeckApp(App[None]):
             self._save_current_config()
             self._refresh_provider_list()
             self._select_provider(self._active_index)
-            self._set_status(f"Updated provider {provider.name}")
+            self._set_status(
+                f"Updated provider {provider.name} (saved to {self._config_destination_label()})"
+            )
             log.info("Updated provider %s (previously %s)", provider.name, previous_name)
 
     def action_play_channel(self) -> None:
@@ -1121,18 +1223,23 @@ class StreamdeckApp(App[None]):
         self._config.remove(state.config.name)
         self._save_current_config()
         log.warning("Deleted provider %s", state.config.name)
+        location = self._config_destination_label()
         if self._states:
             self._active_index = min(self._active_index, len(self._states) - 1)
             self._editing_name = self._states[self._active_index].config.name
             self._refresh_provider_list()
             self._select_provider(self._active_index)
-            self._set_status(f"Removed provider {state.config.name}")
+            self._set_status(
+                f"Removed provider {state.config.name} (saved to {location})"
+            )
         else:
             self._active_index = None
             self._editing_name = None
             self._refresh_provider_list()
             self._clear_channels("Add a provider to load channels")
-            self._set_status(f"Removed provider {state.config.name}")
+            self._set_status(
+                f"Removed provider {state.config.name} (saved to {location})"
+            )
             self.query_one(ProviderForm).clear()
             self.query_one(ProviderForm).focus_name()
 
@@ -1249,22 +1356,44 @@ class StreamdeckApp(App[None]):
 
     @on(ListView.Highlighted, "#channel-list")
     def on_channel_highlighted(self, event: ListView.Highlighted) -> None:
-        item = event.item
-        channel: Optional[Channel] = None
-        provider: Optional[str] = None
-        if isinstance(item, ChannelListItem):
-            state = self._current_state()
-            provider = state.config.name if state else None
-            channel = item.channel
-        elif isinstance(item, FavoriteListItem):
-            channel = self._favorite_to_channel(item.favorite)
-            provider = item.favorite.provider
-        else:
+        if not isinstance(event.item, ChannelListItem):
             self._clear_active_channel_info()
             log.debug("Channel highlighted: %s", None)
             return
+        local_index = getattr(event.list_view, "index", None)
+        if local_index is None:
+            self._clear_active_channel_info()
+            log.debug("Channel highlighted: %s", None)
+            return
+        global_index = self._channel_window_start + local_index
+        self._maybe_shift_channel_window(global_index)
+        local_index = getattr(event.list_view, "index", None)
+        if local_index is None:
+            self._clear_active_channel_info()
+            log.debug("Channel highlighted: %s", None)
+            return
+        global_index = self._channel_window_start + local_index
+        if not self.filtered_channels or not (0 <= global_index < len(self.filtered_channels)):
+            self._clear_active_channel_info()
+            log.debug("Channel highlighted: %s", None)
+            return
+        state = self._current_state()
+        provider = state.config.name if state else None
+        channel = self.filtered_channels[global_index]
         self._update_active_channel_info(channel, provider)
         log.debug("Channel highlighted: %s", getattr(channel, "name", None))
+
+    @on(ListView.Highlighted, "#favorites-list")
+    def on_favorite_highlighted(self, event: ListView.Highlighted) -> None:
+        item = event.item
+        if isinstance(item, FavoriteListItem):
+            channel = self._favorite_to_channel(item.favorite)
+            provider = item.favorite.provider
+            self._update_active_channel_info(channel, provider)
+            log.debug("Favorite highlighted: %s", item.favorite.channel_name)
+        else:
+            self._clear_active_channel_info()
+            log.debug("Favorite highlighted: %s", None)
 
 
 __all__ = ["StreamdeckApp"]
