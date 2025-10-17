@@ -12,7 +12,8 @@ import threading
 import weakref
 
 if TYPE_CHECKING:  # pragma: no cover - only for typing
-    from .app import LogViewer, StreamdeckApp
+    from .app import StreamdeckApp
+    from .log_viewer import LogViewer
 
 __all__ = ["configure_logging", "get_logger", "register_log_viewer"]
 
