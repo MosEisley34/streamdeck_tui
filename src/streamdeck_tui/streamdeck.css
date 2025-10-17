@@ -35,6 +35,16 @@ TabPane {
     height: auto;
 }
 
+#channel-info-container,
+#playing-info-container {
+    layout: vertical;
+    width: 1fr;
+}
+
+#channel-actions {
+    layout: horizontal;
+}
+
 #channel-info,
 #playing-channel-info,
 #favorites-help {
