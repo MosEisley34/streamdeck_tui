@@ -136,16 +136,16 @@ class _ChannelSummary(Static):
         self._show_provider = show_provider
 
     def on_mount(self) -> None:
-        self._render()
+        self._refresh_summary()
 
     def watch_channel(self, _: Optional[Channel]) -> None:
-        self._render()
+        self._refresh_summary()
 
     def watch_provider(self, _: Optional[str]) -> None:
         if self._show_provider:
-            self._render()
+            self._refresh_summary()
 
-    def _render(self) -> None:
+    def _refresh_summary(self) -> None:
         lines = [f"[b]{self._title}[/b]"]
         channel = self.channel
         if channel is None:
