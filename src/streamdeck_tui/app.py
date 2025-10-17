@@ -105,26 +105,71 @@ class FavoriteListItem(ListItem):
         self.favorite = favorite
 
 
-class ChannelInfo(Static):
-    """Display information about the currently selected channel."""
+class _ChannelSummary(Static):
+    """Render a compact summary for a channel selection."""
 
     channel: reactive[Optional[Channel]] = reactive(None)
+    provider: reactive[Optional[str]] = reactive(None)
 
-    def watch_channel(self, channel: Optional[Channel]) -> None:
+    def __init__(
+        self,
+        *,
+        title: str,
+        empty_message: str,
+        show_provider: bool = False,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._title = title
+        self._empty_message = empty_message
+        self._show_provider = show_provider
+
+    def on_mount(self) -> None:
+        self._render()
+
+    def watch_channel(self, _: Optional[Channel]) -> None:
+        self._render()
+
+    def watch_provider(self, _: Optional[str]) -> None:
+        if self._show_provider:
+            self._render()
+
+    def _render(self) -> None:
+        lines = [f"[b]{self._title}[/b]"]
+        channel = self.channel
         if channel is None:
-            self.update("Select a channel to view details.")
-            return
-        lines = [f"[b]{channel.name}[/b]"]
-        if channel.group:
-            lines.append(f"Group: {channel.group}")
-        if channel.logo:
-            lines.append(f"Logo: {channel.logo}")
-        if channel.raw_attributes:
-            attributes = "\n".join(
-                f"• {key}: {value}" for key, value in sorted(channel.raw_attributes.items())
-            )
-            lines.append(f"Attributes:\n{attributes}")
+            lines.append(self._empty_message)
+        else:
+            lines.append(channel.name)
+            if self._show_provider and self.provider:
+                lines.append(f"Provider: {self.provider}")
+            if channel.group:
+                lines.append(f"Group: {channel.group}")
         self.update("\n".join(lines))
+
+
+class ChannelInfo(_ChannelSummary):
+    """Display information about the currently selected channel."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(
+            title="Selected channel",
+            empty_message="Select a channel to view details.",
+            show_provider=False,
+            **kwargs,
+        )
+
+
+class PlayingChannelInfo(_ChannelSummary):
+    """Display information about the stream that is currently playing."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(
+            title="Now playing",
+            empty_message="No stream is currently playing.",
+            show_provider=True,
+            **kwargs,
+        )
 
 
 class StatusBar(Static):
@@ -233,9 +278,22 @@ TabPane {
     height: 1fr;
 }
 
+#channel-info-panels {
+    layout: horizontal;
+    height: auto;
+}
+
 #channel-info,
+#playing-channel-info,
 #favorites-help {
     padding: 1;
+}
+
+#channel-info,
+#playing-channel-info {
+    border: heavy $surface;
+    width: 1fr;
+    min-height: 5;
 }
 
 #log-viewer {
@@ -293,6 +351,8 @@ class StreamdeckApp(App[None]):
         self._active_tab: str = "channels"
         self._player_process: Optional[Process] = None
         self._player_task: Optional[asyncio.Task[None]] = None
+        self._now_playing: Optional[tuple[str, Channel]] = None
+        self._player_stop_requested: bool = False
         self._worker: Optional[Worker] = None
         self._app_thread_id: int = threading.get_ident()
         self._log_viewer: Optional[LogViewer] = None
@@ -322,7 +382,9 @@ class StreamdeckApp(App[None]):
                 with Vertical(id="channels-pane"):
                     yield Input(placeholder="Search channels…", id="search")
                     yield ListView(id="channel-list")
-                    yield ChannelInfo(id="channel-info")
+                    with Horizontal(id="channel-info-panels"):
+                        yield ChannelInfo(id="channel-info")
+                        yield PlayingChannelInfo(id="playing-channel-info")
             with TabPane("Favorites", id="favorites-tab"):
                 with Vertical(id="favorites-pane"):
                     yield ListView(id="favorites-list")
@@ -367,6 +429,26 @@ class StreamdeckApp(App[None]):
         log.debug("Status update: %s", message)
         self.query_one(StatusBar).status = message
 
+    def _update_active_channel_info(
+        self, channel: Optional[Channel], provider: Optional[str]
+    ) -> None:
+        info = self.query_one(ChannelInfo)
+        info.provider = provider
+        info.channel = channel
+
+    def _clear_active_channel_info(self) -> None:
+        self._update_active_channel_info(None, None)
+
+    def _update_playing_info(
+        self, channel: Optional[Channel], provider: Optional[str]
+    ) -> None:
+        info = self.query_one(PlayingChannelInfo)
+        info.provider = provider
+        info.channel = channel
+
+    def _clear_playing_info(self) -> None:
+        self._update_playing_info(None, None)
+
     def _update_tab_buttons(self) -> None:
         """Refresh the visual state of the tab controls."""
 
@@ -400,18 +482,20 @@ class StreamdeckApp(App[None]):
             return
         try:
             list_view = self.query_one("#channel-list", ListView)
-            info = self.query_one(ChannelInfo)
         except Exception:  # pragma: no cover - defensive for tests without UI
             return
         list_view.clear()
         if not self._favorite_entries:
             list_view.append(ListItem(Label("No favorite channels saved")))
-            info.channel = None
+            self._clear_active_channel_info()
             return
         for favorite in self._favorite_entries:
             list_view.append(FavoriteListItem(favorite))
         list_view.index = 0
-        info.channel = self._favorite_to_channel(self._favorite_entries[0])
+        first = self._favorite_entries[0]
+        self._update_active_channel_info(
+            self._favorite_to_channel(first), first.provider
+        )
         self._set_status(f"Showing {len(self._favorite_entries)} favorite channel(s)")
 
     def _set_active_tab(self, tab: str) -> None:
@@ -468,14 +552,21 @@ class StreamdeckApp(App[None]):
                 )
                 return
             self._call_on_app_thread(self._handle_player_started, provider_name, channel, process)
+            returncode: Optional[int] = None
             try:
-                await process.wait()
+                returncode = await process.wait()
             except Exception as exc:  # pragma: no cover - process wait failures are rare
                 log.warning("Player wait failed for %s: %s", channel.name, exc)
+                returncode = getattr(process, "returncode", None)
             finally:
-                self._call_on_app_thread(self._handle_player_finished, channel.name)
+                self._call_on_app_thread(
+                    self._handle_player_exit,
+                    provider_name,
+                    channel.name,
+                    returncode,
+                )
 
-        self._stop_player_process()
+        self._stop_player_process(suppress_status=True)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -485,23 +576,56 @@ class StreamdeckApp(App[None]):
 
     def _handle_player_started(self, provider_name: str, channel: Channel, process: Process) -> None:
         self._player_process = process
+        self._now_playing = (provider_name, channel)
+        self._update_playing_info(channel, provider_name)
         self._set_status(f"Playing {channel.name} from {provider_name}")
         log.info("Player launched for %s (%s)", channel.name, provider_name)
 
-    def _handle_player_finished(self, channel_name: str) -> None:
+    def _handle_player_exit(
+        self, provider_name: str, channel_name: str, returncode: Optional[int]
+    ) -> None:
         self._player_process = None
         self._player_task = None
-        self._set_status(f"Playback finished for {channel_name}")
-        log.info("Player exited for %s", channel_name)
+        self._now_playing = None
+        self._clear_playing_info()
+        user_stopped = self._player_stop_requested
+        self._player_stop_requested = False
+        if user_stopped:
+            log.info("Player exited for %s after stop request", channel_name)
+            return
+        if returncode not in (None, 0):
+            message = (
+                f"Playback failed for {channel_name} (exit code {returncode})"
+            )
+            self._set_status(message)
+            log.error(
+                "Player exited with code %s for %s (%s)",
+                returncode,
+                channel_name,
+                provider_name,
+            )
+        else:
+            self._set_status(f"Playback finished for {channel_name}")
+            log.info("Player exited for %s (%s)", channel_name, provider_name)
 
     def _handle_player_failure(self, provider_name: str, channel_name: str, message: str) -> None:
         self._player_process = None
         self._player_task = None
+        self._now_playing = None
+        self._clear_playing_info()
         error = f"Failed to launch player for {channel_name} ({provider_name}): {message}"
         self._set_status(error)
         log.error(error)
 
-    def _stop_player_process(self) -> None:
+    def _stop_player_process(
+        self, *, user_requested: bool = False, suppress_status: bool = False
+    ) -> None:
+        should_suppress = user_requested or suppress_status
+        has_process = self._player_process is not None or self._player_task is not None
+        if should_suppress and has_process:
+            self._player_stop_requested = True
+        elif not has_process:
+            self._player_stop_requested = False
         if self._player_task:
             self._player_task.cancel()
             self._player_task = None
@@ -544,7 +668,7 @@ class StreamdeckApp(App[None]):
 
     def _clear_channels(self, message: str = "No provider selected") -> None:
         self.filtered_channels = []
-        self.query_one(ChannelInfo).channel = None
+        self._clear_active_channel_info()
         self._cancel_channel_render()
         if self._active_tab != "channels":
             return
@@ -555,10 +679,9 @@ class StreamdeckApp(App[None]):
     def _apply_filter(self, query: str) -> None:
         log.debug("Applying channel filter: %s", query)
         state = self._current_state()
-        info = self.query_one(ChannelInfo)
         self._cancel_channel_render()
         if state is None:
-            info.channel = None
+            self._clear_active_channel_info()
             self.filtered_channels = []
             if self._active_tab == "channels":
                 list_view = self.query_one("#channel-list", ListView)
@@ -570,7 +693,7 @@ class StreamdeckApp(App[None]):
                 message = "Loading channels…"
             else:
                 message = "Channels not loaded"
-            info.channel = None
+            self._clear_active_channel_info()
             self.filtered_channels = []
             if self._active_tab == "channels":
                 list_view = self.query_one("#channel-list", ListView)
@@ -584,7 +707,7 @@ class StreamdeckApp(App[None]):
                 list_view = self.query_one("#channel-list", ListView)
                 list_view.clear()
                 list_view.append(ListItem(Label("No channels found")))
-                info.channel = None
+                self._clear_active_channel_info()
             else:
                 self._start_channel_render(channels)
         self._set_status(f"Showing {len(channels)} channels for {state.config.name}")
@@ -594,6 +717,8 @@ class StreamdeckApp(App[None]):
 
         if not channels:
             return
+        state = self._current_state()
+        provider_name = state.config.name if state else None
         self._channel_render_generation += 1
         self._channel_rendered_count = 0
         self._channel_first_batch_size = 0
@@ -603,7 +728,6 @@ class StreamdeckApp(App[None]):
         except RuntimeError:
             log.debug("Rendering channels synchronously outside the event loop")
             list_view = self.query_one("#channel-list", ListView)
-            info = self.query_one(ChannelInfo)
             batch_context = (
                 list_view.batch_update()
                 if hasattr(list_view, "batch_update")
@@ -614,11 +738,13 @@ class StreamdeckApp(App[None]):
                 for channel in channels:
                     list_view.append(ChannelListItem(channel))
             list_view.index = 0
-            info.channel = channels[0]
+            self._update_active_channel_info(channels[0], provider_name)
             self._channel_rendered_count = len(channels)
             self._channel_first_batch_size = len(channels)
             return
-        task = loop.create_task(self._render_channel_list(channels, generation))
+        task = loop.create_task(
+            self._render_channel_list(channels, generation, provider_name)
+        )
         self._channel_render_task = task
 
         def _finalize_render(completed: asyncio.Task[None]) -> None:
@@ -643,12 +769,14 @@ class StreamdeckApp(App[None]):
         self._channel_first_batch_size = 0
 
     async def _render_channel_list(
-        self, channels: Sequence[Channel], generation: int
+        self,
+        channels: Sequence[Channel],
+        generation: int,
+        provider_name: Optional[str],
     ) -> None:
         """Render ``channels`` to the list view in small batches."""
 
         list_view = self.query_one("#channel-list", ListView)
-        info = self.query_one(ChannelInfo)
         clear_event = asyncio.Event()
 
         def clear_list() -> None:
@@ -662,7 +790,7 @@ class StreamdeckApp(App[None]):
             )
             with batch_context:
                 list_view.clear()
-            info.channel = None
+            self._clear_active_channel_info()
             self._channel_rendered_count = 0
             self._channel_first_batch_size = 0
             clear_event.set()
@@ -700,7 +828,7 @@ class StreamdeckApp(App[None]):
                 if first_batch:
                     self._channel_first_batch_size = len(batch)
                     list_view.index = 0
-                    info.channel = batch[0]
+                    self._update_active_channel_info(batch[0], provider_name)
                     first_batch = False
                 batch_event.set()
 
@@ -950,7 +1078,9 @@ class StreamdeckApp(App[None]):
         if self._player_process is None:
             self._set_status("No active player to stop")
             return
-        self._stop_player_process()
+        self._stop_player_process(user_requested=True)
+        self._now_playing = None
+        self._clear_playing_info()
         self._set_status("Stopped playback")
         log.info("Stopped player at user request")
 
@@ -1119,15 +1249,22 @@ class StreamdeckApp(App[None]):
 
     @on(ListView.Highlighted, "#channel-list")
     def on_channel_highlighted(self, event: ListView.Highlighted) -> None:
-        info = self.query_one(ChannelInfo)
         item = event.item
+        channel: Optional[Channel] = None
+        provider: Optional[str] = None
         if isinstance(item, ChannelListItem):
-            info.channel = item.channel
+            state = self._current_state()
+            provider = state.config.name if state else None
+            channel = item.channel
         elif isinstance(item, FavoriteListItem):
-            info.channel = self._favorite_to_channel(item.favorite)
+            channel = self._favorite_to_channel(item.favorite)
+            provider = item.favorite.provider
         else:
-            info.channel = None
-        log.debug("Channel highlighted: %s", getattr(info.channel, "name", None))
+            self._clear_active_channel_info()
+            log.debug("Channel highlighted: %s", None)
+            return
+        self._update_active_channel_info(channel, provider)
+        log.debug("Channel highlighted: %s", getattr(channel, "name", None))
 
 
 __all__ = ["StreamdeckApp"]
