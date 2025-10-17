@@ -41,8 +41,11 @@ def test_build_player_command_success(monkeypatch):
     assert command.args == ["http://example"]
 
 
-def test_build_player_command_adds_mpv_flags(monkeypatch):
+def test_build_player_command_adds_mpv_base_flags(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(player_module.sys, "platform", "linux")
     channel = Channel(name="Test", url="http://example/stream")
     command = build_player_command(channel)
     assert command.executable == "/usr/bin/mpv"
@@ -50,9 +53,6 @@ def test_build_player_command_adds_mpv_flags(monkeypatch):
         "--force-window=immediate",
         "--player-operation-mode=pseudo-gui",
         "--no-terminal",
-        "--hwdec=vaapi",
-        "--vo=gpu",
-        "--gpu-context=x11",
         "--no-interpolation",
         "--video-sync=display-resample",
         "--scale=bilinear",
@@ -62,6 +62,8 @@ def test_build_player_command_adds_mpv_flags(monkeypatch):
         "--mute",
     ]
     assert command.args[: len(expected_flags)] == expected_flags
+    assert all("--hwdec" not in flag for flag in expected_flags)
+    assert all("--gpu-context" not in flag for flag in expected_flags)
     assert command.args[-1] == channel.url
     ipc_flags = [arg for arg in command.args if arg.startswith("--input-ipc-server=")]
     assert ipc_flags, "mpv commands should include an IPC server flag"
@@ -71,6 +73,41 @@ def test_build_player_command_adds_mpv_flags(monkeypatch):
     for path in command.cleanup_paths:
         assert path.exists()
         shutil.rmtree(path, ignore_errors=True)
+
+
+def test_build_player_command_adds_windows_hw_flags(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(player_module.sys, "platform", "win32")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    channel = Channel(name="Win", url="http://example/win")
+    command = build_player_command(channel)
+    hw_flags = [flag for flag in command.args if flag.startswith("--hwdec")]
+    assert hw_flags == ["--hwdec=auto-safe"]
+    assert not any(flag.startswith("--gpu-context") for flag in command.args)
+
+
+def test_build_player_command_adds_wayland_hw_flags(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(player_module.sys, "platform", "linux")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    channel = Channel(name="Wayland", url="http://example/wayland")
+    command = build_player_command(channel)
+    assert "--hwdec=auto-safe" in command.args
+    assert "--vo=gpu" in command.args
+    assert "--gpu-context=wayland" in command.args
+
+
+def test_build_player_command_default_has_no_hw_flags(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(player_module.sys, "platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    channel = Channel(name="Default", url="http://example/default")
+    command = build_player_command(channel)
+    assert not any(flag.startswith("--hwdec") for flag in command.args)
+    assert not any(flag.startswith("--gpu-context") for flag in command.args)
 
 
 def test_probe_player_success(monkeypatch):

@@ -5,6 +5,7 @@ import asyncio
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,6 +103,34 @@ def _player_probe_timeout() -> float:
     return timeout
 
 
+def _detect_display_backend() -> str:
+    """Return a string describing the current display backend."""
+
+    platform = sys.platform
+    if platform.startswith("win"):
+        return "windows"
+    if platform == "darwin":
+        return "darwin"
+    if os.getenv("WAYLAND_DISPLAY"):
+        return "wayland"
+    if os.getenv("DISPLAY"):
+        return "x11"
+    return "unknown"
+
+
+def _mpv_hardware_flags() -> list[str]:
+    """Return hardware-accelerated mpv flags appropriate for the environment."""
+
+    backend = _detect_display_backend()
+    if backend in {"windows", "darwin"}:
+        return ["--hwdec=auto-safe"]
+    if backend == "wayland":
+        return ["--hwdec=auto-safe", "--vo=gpu", "--gpu-context=wayland"]
+    if backend == "x11":
+        return ["--hwdec=auto-safe", "--vo=gpu", "--gpu-context=x11"]
+    return []
+
+
 def build_player_command(channel: Channel, *, preferred: Optional[str] = None) -> PlayerCommand:
     """Construct a player command for the given channel."""
 
@@ -120,9 +149,6 @@ def build_player_command(channel: Channel, *, preferred: Optional[str] = None) -
                 "--force-window=immediate",
                 "--player-operation-mode=pseudo-gui",
                 "--no-terminal",
-                "--hwdec=vaapi",
-                "--vo=gpu",
-                "--gpu-context=x11",
                 "--no-interpolation",
                 "--video-sync=display-resample",
                 "--scale=bilinear",
@@ -132,6 +158,7 @@ def build_player_command(channel: Channel, *, preferred: Optional[str] = None) -
                 "--mute",
             ]
         )
+        args.extend(_mpv_hardware_flags())
         if ipc_path:
             args.append(f"--input-ipc-server={ipc_path}")
     command = PlayerCommand(
