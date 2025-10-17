@@ -9,6 +9,7 @@ from typing import Iterable
 from .app import StreamdeckApp
 from .config import CONFIG_PATH, load_config
 from .logging_utils import configure_logging, get_logger
+from .player import PREFERRED_PLAYER_DEFAULT
 
 log = get_logger(__name__)
 
@@ -38,8 +39,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--player",
         dest="preferred_player",
-        default=None,
-        help="Preferred media player executable to launch (default: auto-detect)",
+        default=PREFERRED_PLAYER_DEFAULT,
+        help=(
+            "Preferred media player executable to launch (default: %(default)s;"
+            " falls back to auto-detect)"
+        ),
     )
     return parser.parse_args(argv)
 
