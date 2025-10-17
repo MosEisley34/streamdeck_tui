@@ -446,7 +446,12 @@ def test_fetch_provider_success_on_app_thread(monkeypatch) -> None:
 
     channels = [Channel(name="Demo", url="http://example.com/stream")]
 
-    monkeypatch.setattr(app_module, "load_playlist", lambda url: list(channels), raising=False)
+    monkeypatch.setattr(
+        app_module,
+        "load_playlist",
+        lambda url, **_: list(channels),
+        raising=False,
+    )
 
     async def fake_status(_: str) -> ConnectionStatus:
         return ConnectionStatus(message="OK")
@@ -481,7 +486,7 @@ def test_fetch_provider_error_on_app_thread(monkeypatch) -> None:
     monkeypatch.setattr(StreamdeckApp, "_refresh_provider_list", lambda self: None, raising=False)
     monkeypatch.setattr(StreamdeckApp, "_clear_channels", lambda self, message="": None, raising=False)
 
-    def failing_loader(_: str) -> None:
+    def failing_loader(_: str, **__: object) -> None:
         raise RuntimeError("boom")
 
     monkeypatch.setattr(app_module, "load_playlist", failing_loader, raising=False)

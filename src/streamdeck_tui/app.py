@@ -12,6 +12,7 @@ if __name__ == "__main__" and __package__ is None:
 
 import asyncio
 from asyncio.subprocess import Process
+import math
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -48,7 +49,7 @@ from rich.markup import escape
 from .config import AppConfig, FavoriteChannel, ProviderConfig, CONFIG_PATH, save_config
 from .logging_utils import configure_logging, get_logger
 from .playlist import Channel, build_search_index, filter_channels, load_playlist
-from .player import launch_player
+from .player import launch_player, probe_player
 from .providers import ConnectionStatus, fetch_connection_status
 from .log_viewer import LogViewer
 
@@ -77,6 +78,22 @@ def _format_timedelta(delta: timedelta) -> str:
     return " ".join(parts)
 
 
+def _format_bytes(size: int) -> str:
+    """Return ``size`` formatted as a human-readable string."""
+
+    if size <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(size)
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} PB"  # pragma: no cover - extremely large files
+
+
 @dataclass
 class ProviderState:
     """Runtime state tracked for each provider."""
@@ -88,6 +105,9 @@ class ProviderState:
     loading: bool = False
     last_loaded_at: Optional[datetime] = None
     search_index: Optional[dict[str, set[int]]] = None
+    loading_progress: float = 0.0
+    loading_bytes_read: int = 0
+    loading_bytes_total: Optional[int] = None
 
 
 class ChannelListItem(ListItem):
@@ -192,6 +212,42 @@ class StatusBar(Static):
         self.update(status)
 
 
+class ProviderProgress(Static):
+    """Visual progress indicator for provider loading."""
+
+    def on_mount(self) -> None:  # pragma: no cover - relies on runtime styles
+        self.hide()
+
+    def hide(self) -> None:
+        self.styles.display = "none"
+
+    def show_progress(
+        self,
+        *,
+        provider: str,
+        progress: float,
+        loaded: int,
+        total: Optional[int],
+    ) -> None:
+        self.styles.display = "block"
+        clamped = max(0.0, min(progress, 1.0))
+        percent = int(round(clamped * 100))
+        bar_width = 28
+        filled = int(round(clamped * bar_width))
+        filled = max(0, min(bar_width, filled))
+        empty = bar_width - filled
+        bar = f"{'█' * filled}{'░' * empty}"
+        if total and total > 0:
+            totals = f"{_format_bytes(loaded)} / {_format_bytes(total)}"
+        else:
+            totals = f"{_format_bytes(loaded)} received"
+        text = (
+            f"[b]{escape(provider)}[/b] — {percent}% ({totals})\n"
+            f"[{bar}]"
+        )
+        self.update(text)
+
+
 class ProviderForm(Static):
     """Form used to edit provider configuration."""
 
@@ -283,25 +339,32 @@ TabPane {
     padding-top: 1;
 }
 
+#provider-progress {
+    border: heavy $surface;
+    padding: 0 1;
+    min-height: 3;
+}
+
+#channel-browser {
+    layout: horizontal;
+    height: 1fr;
+}
+
 #channel-list,
 #favorites-list,
 #log-viewer {
     height: 1fr;
 }
 
-#channel-info-panels {
-    layout: horizontal;
-    height: auto;
+#channel-list {
+    width: 3fr;
+    min-width: 48;
 }
 
-#channel-info-container,
-#playing-info-container {
+#channel-sidebar {
     layout: vertical;
     width: 1fr;
-}
-
-#channel-actions {
-    layout: horizontal;
+    min-width: 32;
 }
 
 #channel-info,
@@ -315,6 +378,14 @@ TabPane {
     border: heavy $surface;
     width: 1fr;
     min-height: 5;
+}
+
+#channel-actions {
+    layout: horizontal;
+}
+
+#playing-stop {
+    width: 1fr;
 }
 
 #log-viewer {
@@ -353,6 +424,7 @@ class StreamdeckApp(App[None]):
         Binding("p", "play_channel", "Play"),
         Binding("s", "stop_channel", "Stop"),
         Binding("f", "toggle_favorite", "Favorite"),
+        Binding("ctrl+shift+p", "probe_player", "Probe player"),
     ]
 
     def __init__(
@@ -386,6 +458,7 @@ class StreamdeckApp(App[None]):
         self._channel_list_ready: bool = False
         self._pending_channel_operations: list[Callable[[], None]] = []
         self._channel_window_start: int = 0
+        self._probing_player: bool = False
         log.debug("Inline stylesheet active (%d characters)", len(self.CSS))
         log.info(
             "StreamdeckApp initialized with %d provider(s); config path=%s",
@@ -400,6 +473,7 @@ class StreamdeckApp(App[None]):
                 with Vertical(id="providers-pane"):
                     yield Label("Providers", id="providers-title")
                     yield ListView(id="provider-list")
+                    yield ProviderProgress(id="provider-progress")
                     with Horizontal(id="provider-actions"):
                         yield Button("New", id="provider-new", variant="primary")
                         yield Button("Delete", id="provider-delete", variant="warning")
@@ -411,9 +485,9 @@ class StreamdeckApp(App[None]):
             with TabPane("Channel browser", id="channels-tab"):
                 with Vertical(id="channels-pane"):
                     yield Input(placeholder="Search channels…", id="search")
-                    yield ChannelListView(id="channel-list")
-                    with Horizontal(id="channel-info-panels"):
-                        with Vertical(id="channel-info-container"):
+                    with Horizontal(id="channel-browser"):
+                        yield ChannelListView(id="channel-list")
+                        with Vertical(id="channel-sidebar"):
                             yield ChannelInfo(id="channel-info")
                             with Horizontal(id="channel-actions"):
                                 yield Button(
@@ -431,7 +505,11 @@ class StreamdeckApp(App[None]):
                                     "Favorite",
                                     id="channel-favorite",
                                 )
-                        with Vertical(id="playing-info-container"):
+                                yield Button(
+                                    "Probe player",
+                                    id="channel-probe",
+                                    variant="default",
+                                )
                             yield PlayingChannelInfo(id="playing-channel-info")
                             yield Button(
                                 "Stop playback",
@@ -741,7 +819,8 @@ class StreamdeckApp(App[None]):
 
     def _provider_label(self, state: ProviderState) -> str:
         if state.loading:
-            detail = "loading…"
+            percent = int(round(max(0.0, min(state.loading_progress, 1.0)) * 100))
+            detail = f"loading {percent}%"
         elif state.last_error:
             detail = f"error: {state.last_error}"
         elif state.connection_status:
@@ -768,6 +847,25 @@ class StreamdeckApp(App[None]):
                 list_view.index = 0
         else:
             list_view.index = None
+        self._update_provider_progress_widget()
+
+    def _update_provider_progress_widget(
+        self, state: Optional[ProviderState] = None
+    ) -> None:
+        widget = self._query_optional_widget("#provider-progress", ProviderProgress)
+        if widget is None:
+            return
+        if state is None:
+            state = self._current_state()
+        if state is None or not state.loading:
+            widget.hide()
+            return
+        widget.show_progress(
+            provider=state.config.name,
+            progress=state.loading_progress,
+            loaded=state.loading_bytes_read,
+            total=state.loading_bytes_total,
+        )
 
     def _clear_channels(self, message: str = "No provider selected") -> None:
         self.filtered_channels = []
@@ -1042,16 +1140,32 @@ class StreamdeckApp(App[None]):
         state.last_error = None
         state.channels = None
         state.connection_status = None
+        state.loading_progress = 0.0
+        state.loading_bytes_read = 0
+        state.loading_bytes_total = None
         log.info("Beginning channel load for provider %s", state.config.name)
         self._clear_channels("Loading channels…")
         self._refresh_provider_list()
         self._set_status(f"Loading channels for {state.config.name}…")
+        self._update_provider_progress_widget(state)
         self._worker = self.run_worker(self._fetch_provider(state), name=f"provider:{state.config.name}")
 
     async def _fetch_provider(self, state: ProviderState) -> None:
         log.debug("Worker started for provider %s", state.config.name)
         try:
-            channels = await asyncio.to_thread(load_playlist, state.config.playlist_url)
+            def progress_callback(loaded: int, total: Optional[int]) -> None:
+                self._call_on_app_thread(
+                    self._handle_loading_progress,
+                    state,
+                    loaded,
+                    total,
+                )
+
+            channels = await asyncio.to_thread(
+                load_playlist,
+                state.config.playlist_url,
+                progress=progress_callback,
+            )
         except Exception as exc:  # pragma: no cover - network failures depend on environment
             log.exception("Error loading playlist for %s", state.config.name)
             self._call_on_app_thread(self._handle_provider_error, state, str(exc))
@@ -1069,12 +1183,30 @@ class StreamdeckApp(App[None]):
             log.debug("Worker finished for provider %s", state.config.name)
             self._call_on_app_thread(self._worker_finished)
 
+    def _handle_loading_progress(
+        self, state: ProviderState, loaded: int, total: Optional[int]
+    ) -> None:
+        state.loading_bytes_read = max(0, loaded)
+        if total is not None and total > 0:
+            state.loading_bytes_total = total
+            state.loading_progress = max(0.0, min(1.0, loaded / total))
+        else:
+            state.loading_bytes_total = None
+            estimate = 1.0 - math.exp(-max(0, loaded) / 1_500_000.0)
+            state.loading_progress = min(0.95, max(state.loading_progress, estimate))
+        if state is self._current_state():
+            self._update_provider_progress_widget(state)
+        self._refresh_provider_list()
+
     def _handle_provider_error(self, state: ProviderState, message: str) -> None:
         state.loading = False
         state.last_error = message
         state.channels = None
         state.search_index = None
         state.last_loaded_at = None
+        state.loading_progress = 0.0
+        state.loading_bytes_read = 0
+        state.loading_bytes_total = None
         if state is self._current_state():
             self._clear_channels(f"Failed to load channels: {message}")
         self._refresh_provider_list()
@@ -1087,6 +1219,9 @@ class StreamdeckApp(App[None]):
         state.channels = channels
         state.search_index = build_search_index(channels)
         state.last_loaded_at = datetime.now(tz=timezone.utc)
+        state.loading_progress = 1.0
+        if state.loading_bytes_total is None:
+            state.loading_bytes_total = state.loading_bytes_read
         log.info(
             "Loaded %d channels for provider %s",
             len(channels),
@@ -1098,6 +1233,7 @@ class StreamdeckApp(App[None]):
                 f"Loaded {len(channels)} channels for {state.config.name}"
             )
         self._refresh_provider_list()
+        self._update_provider_progress_widget(state)
 
     def _handle_status_success(self, state: ProviderState, status: ConnectionStatus) -> None:
         state.connection_status = status
@@ -1110,6 +1246,7 @@ class StreamdeckApp(App[None]):
         if state is self._current_state():
             self._set_status(f"{state.config.name}: {status.as_label()}")
         self._refresh_provider_list()
+        self._update_provider_progress_widget(state)
 
     def _handle_status_error(self, state: ProviderState, message: str) -> None:
         state.connection_status = None
@@ -1122,6 +1259,7 @@ class StreamdeckApp(App[None]):
         if state is self._current_state():
             self._set_status(f"Failed to fetch status: {message}")
         self._refresh_provider_list()
+        self._update_provider_progress_widget(state)
 
     def _select_provider(self, index: int) -> None:
         if not (0 <= index < len(self._states)):
@@ -1142,6 +1280,7 @@ class StreamdeckApp(App[None]):
         else:
             self._apply_filter(self.query_one("#search", Input).value)
         self._refresh_provider_list()
+        self._update_provider_progress_widget(state)
 
     def _name_exists(self, name: str) -> bool:
         return any(state.config.name == name for state in self._states)
@@ -1174,6 +1313,42 @@ class StreamdeckApp(App[None]):
 
     def action_save_provider(self) -> None:
         self._save_provider()
+
+    def action_probe_player(self) -> None:
+        if self._probing_player:
+            self._set_status("Player probe already in progress")
+            return
+        self._probing_player = True
+        self._set_status("Probing media player…")
+
+        def worker() -> None:
+            try:
+                summary = probe_player()
+            except Exception as exc:  # pragma: no cover - depends on runtime env
+                self._call_on_app_thread(
+                    self._handle_probe_result,
+                    False,
+                    str(exc),
+                )
+            else:
+                self._call_on_app_thread(
+                    self._handle_probe_result,
+                    True,
+                    summary,
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_probe_result(self, success: bool, message: str) -> None:
+        self._probing_player = False
+        if success:
+            status = f"Player available: {message}"
+            self._set_status(status)
+            log.info("Player probe succeeded: %s", message)
+        else:
+            status = f"Player probe failed: {message}"
+            self._set_status(status)
+            log.error("Player probe failed: %s", message)
 
     def _save_provider(self) -> None:
         form = self.query_one(ProviderForm)
@@ -1389,6 +1564,10 @@ class StreamdeckApp(App[None]):
     @on(Button.Pressed, "#playing-stop")
     def _on_playing_stop(self, _: Button.Pressed) -> None:
         self.action_stop_channel()
+
+    @on(Button.Pressed, "#channel-probe")
+    def _on_channel_probe(self, _: Button.Pressed) -> None:
+        self.action_probe_player()
 
     @on(Button.Pressed, "#channel-favorite")
     def _on_channel_favorite(self, _: Button.Pressed) -> None:
