@@ -17,6 +17,9 @@ from .logging_utils import get_logger
 
 DEFAULT_PLAYER_CANDIDATES: Sequence[str] = ("mpv", "vlc", "ffplay")
 
+PLAYER_PROBE_TIMEOUT_ENV = "STREAMDECK_TUI_PLAYER_PROBE_TIMEOUT"
+DEFAULT_PLAYER_PROBE_TIMEOUT = 10.0
+
 
 log = get_logger(__name__)
 
@@ -73,6 +76,32 @@ def _prepare_mpv_ipc() -> tuple[Optional[str], tuple[Path, ...]]:
     return str(ipc_path), (temp_dir,)
 
 
+def _player_probe_timeout() -> float:
+    """Return the timeout to use for player probes."""
+
+    raw_value = os.getenv(PLAYER_PROBE_TIMEOUT_ENV)
+    if raw_value is None:
+        return DEFAULT_PLAYER_PROBE_TIMEOUT
+    try:
+        timeout = float(raw_value)
+    except ValueError:
+        log.warning(
+            "Invalid %s value %r; using default %.1f seconds",
+            PLAYER_PROBE_TIMEOUT_ENV,
+            raw_value,
+            DEFAULT_PLAYER_PROBE_TIMEOUT,
+        )
+        return DEFAULT_PLAYER_PROBE_TIMEOUT
+    if timeout <= 0:
+        log.warning(
+            "Probe timeout %.1f from %s must be positive; using default",
+            timeout,
+            PLAYER_PROBE_TIMEOUT_ENV,
+        )
+        return DEFAULT_PLAYER_PROBE_TIMEOUT
+    return timeout
+
+
 def build_player_command(channel: Channel, *, preferred: Optional[str] = None) -> PlayerCommand:
     """Construct a player command for the given channel."""
 
@@ -122,14 +151,23 @@ def probe_player(preferred: Optional[str] = None) -> str:
     executable = detect_player(preferred)
     if executable is None:
         raise RuntimeError("No supported media player found (mpv, vlc, ffplay)")
+    timeout = _player_probe_timeout()
     try:
         result = subprocess.run(
             [executable, "--version"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=timeout,
             check=False,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            (
+                f"{Path(executable).name} --version timed out after {timeout:.1f} seconds. "
+                f"Increase the timeout via the {PLAYER_PROBE_TIMEOUT_ENV} environment variable "
+                "or run the command manually."
+            )
+        ) from exc
     except FileNotFoundError as exc:  # pragma: no cover - defensive
         raise RuntimeError(f"Failed to execute {executable}: {exc}") from exc
     except subprocess.SubprocessError as exc:  # pragma: no cover - defensive
