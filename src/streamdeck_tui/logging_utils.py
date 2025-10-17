@@ -74,6 +74,17 @@ def _attach_textual_handler(
     configure_logging._textual_handler = handler  # type: ignore[attr-defined]
 
 
+def _detach_stream_handler(logger: logging.Logger) -> None:
+    handler: Optional[logging.Handler] = getattr(
+        configure_logging, "_stream_handler", None
+    )
+    if handler is None:
+        return
+    if handler in logger.handlers:
+        logger.removeHandler(handler)
+    configure_logging._stream_handler = None  # type: ignore[attr-defined]
+
+
 def _coerce_level(value: str) -> int:
     """Return a logging level derived from *value*."""
 
@@ -158,6 +169,7 @@ def configure_logging(
             _attach_textual_handler(
                 logger, app=stored_app, log_viewer=stored_viewer
             )
+            _detach_stream_handler(logger)
         return logger
 
     env_level = os.getenv(_ENV_LEVEL)
@@ -172,6 +184,7 @@ def configure_logging(
     stream_handler.setFormatter(formatter)
     stream_handler.setLevel(log_level)
     logger.addHandler(stream_handler)
+    configure_logging._stream_handler = stream_handler  # type: ignore[attr-defined]
 
     destination = os.getenv(_ENV_FILE)
     if destination is None:
@@ -198,6 +211,7 @@ def configure_logging(
     configure_logging._configured = True  # type: ignore[attr-defined]
     if stored_app is not None and stored_viewer is not None:
         _attach_textual_handler(logger, app=stored_app, log_viewer=stored_viewer)
+        _detach_stream_handler(logger)
     logger.debug("Logging configured with level %s", logging.getLevelName(log_level))
     return logger
 
