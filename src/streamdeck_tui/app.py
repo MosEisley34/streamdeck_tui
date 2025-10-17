@@ -43,6 +43,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
         "Install dependencies with 'pip install -e .[dev]' or 'pip install streamdeck-tui'."
     ) from exc
 
+from rich.markup import escape
+
 from .config import AppConfig, FavoriteChannel, ProviderConfig, CONFIG_PATH, save_config
 from .logging_utils import configure_logging, get_logger
 from .playlist import Channel, build_search_index, filter_channels, load_playlist
@@ -92,7 +94,7 @@ class ChannelListItem(ListItem):
     """Render an IPTV channel in the list."""
 
     def __init__(self, channel: Channel) -> None:
-        super().__init__(Label(channel.name, id="channel-name"))
+        super().__init__(Label(channel.name, id="channel-name", markup=False))
         self.channel = channel
 
 
@@ -110,7 +112,7 @@ class FavoriteListItem(ListItem):
 
     def __init__(self, favorite: FavoriteChannel) -> None:
         label = f"{favorite.channel_name} ({favorite.provider})"
-        super().__init__(Label(label, id="channel-name"))
+        super().__init__(Label(label, id="channel-name", markup=False))
         self.favorite = favorite
 
 
@@ -149,11 +151,11 @@ class _ChannelSummary(Static):
         if channel is None:
             lines.append(self._empty_message)
         else:
-            lines.append(channel.name)
+            lines.append(escape(channel.name))
             if self._show_provider and self.provider:
-                lines.append(f"Provider: {self.provider}")
+                lines.append(f"Provider: {escape(self.provider)}")
             if channel.group:
-                lines.append(f"Group: {channel.group}")
+                lines.append(f"Group: {escape(channel.group)}")
         self.update("\n".join(lines))
 
 
