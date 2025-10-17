@@ -4,10 +4,12 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-import subprocess
 from typing import Iterable, Optional, Sequence
+from uuid import uuid4
 
 from .playlist import Channel
 from .logging_utils import get_logger
@@ -24,9 +26,19 @@ class PlayerCommand:
 
     executable: str
     args: list[str]
+    ipc_path: Optional[str] = None
+    cleanup_paths: tuple[Path, ...] = ()
 
     def as_sequence(self) -> list[str]:
         return [self.executable, *self.args]
+
+
+@dataclass(slots=True)
+class PlayerHandle:
+    """Return value from :func:`launch_player` containing process metadata."""
+
+    process: asyncio.subprocess.Process
+    command: PlayerCommand
 
 
 def detect_player(preferred: Optional[str] = None, *, candidates: Iterable[str] = DEFAULT_PLAYER_CANDIDATES) -> Optional[str]:
@@ -48,6 +60,19 @@ def detect_player(preferred: Optional[str] = None, *, candidates: Iterable[str] 
     return None
 
 
+def _prepare_mpv_ipc() -> tuple[Optional[str], tuple[Path, ...]]:
+    """Return an IPC path suitable for mpv along with cleanup targets."""
+
+    if os.name == "nt":
+        # Use a unique named pipe for Windows. mpv will create and tear down the
+        # pipe automatically, so no cleanup is required.
+        return rf"\\\\.\\pipe\\streamdeck_tui_{uuid4().hex}", ()
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="streamdeck_tui_mpv_"))
+    ipc_path = temp_dir / "ipc.sock"
+    return str(ipc_path), (temp_dir,)
+
+
 def build_player_command(channel: Channel, *, preferred: Optional[str] = None) -> PlayerCommand:
     """Construct a player command for the given channel."""
 
@@ -56,8 +81,11 @@ def build_player_command(channel: Channel, *, preferred: Optional[str] = None) -
         log.error("Unable to locate supported media player")
         raise RuntimeError("No supported media player found (mpv, vlc, ffplay)")
     args: list[str] = []
+    cleanup_paths: tuple[Path, ...] = ()
+    ipc_path: Optional[str] = None
     executable_name = Path(executable).name.lower()
     if executable_name == "mpv":
+        ipc_path, cleanup_paths = _prepare_mpv_ipc()
         args.extend(
             [
                 "--force-window=immediate",
@@ -65,12 +93,19 @@ def build_player_command(channel: Channel, *, preferred: Optional[str] = None) -
                 "--no-terminal",
             ]
         )
-    command = PlayerCommand(executable=executable, args=[*args, channel.url])
+        if ipc_path:
+            args.append(f"--input-ipc-server={ipc_path}")
+    command = PlayerCommand(
+        executable=executable,
+        args=[*args, channel.url],
+        ipc_path=ipc_path,
+        cleanup_paths=cleanup_paths,
+    )
     log.info("Built player command for channel %s: %s", channel.name, command.as_sequence())
     return command
 
 
-async def launch_player(channel: Channel, *, preferred: Optional[str] = None) -> asyncio.subprocess.Process:
+async def launch_player(channel: Channel, *, preferred: Optional[str] = None) -> PlayerHandle:
     """Launch a media player for the channel."""
 
     command = build_player_command(channel, preferred=preferred)
@@ -78,7 +113,7 @@ async def launch_player(channel: Channel, *, preferred: Optional[str] = None) ->
     log.info("Launching player process for %s", channel.name)
     process = await asyncio.create_subprocess_exec(*command.as_sequence(), env=env)
     log.debug("Spawned process PID %s", getattr(process, "pid", "unknown"))
-    return process
+    return PlayerHandle(process=process, command=command)
 
 
 def probe_player(preferred: Optional[str] = None) -> str:
@@ -112,6 +147,7 @@ def probe_player(preferred: Optional[str] = None) -> str:
 
 __all__ = [
     "PlayerCommand",
+    "PlayerHandle",
     "detect_player",
     "build_player_command",
     "launch_player",
