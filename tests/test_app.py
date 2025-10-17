@@ -62,6 +62,35 @@ def test_tabbed_layout_and_log_viewer() -> None:
     asyncio.run(run_app())
 
 
+def test_provider_form_hidden_until_new_action() -> None:
+    """The provider form should start hidden and reveal after requesting a new provider."""
+
+    from textual.widgets import ListView
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+
+    provider = ProviderConfig(name="Test", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+    app._states[0].channels = []
+
+    async def run_app() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            container = app.query_one("#provider-form-container")
+            assert not container.display
+            provider_list = app.query_one("#provider-list", ListView)
+            assert provider_list.has_focus
+
+            app.action_new_provider()
+            await pilot.pause()
+
+            assert container.display
+            assert app.provider_form_visible
+
+    asyncio.run(run_app())
+
+
 def test_action_quit_closes_app() -> None:
     """The quit action should stop the application without errors."""
 
