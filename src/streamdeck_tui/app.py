@@ -52,7 +52,12 @@ from rich.markup import escape
 from .config import AppConfig, FavoriteChannel, ProviderConfig, CONFIG_PATH, save_config
 from .logging_utils import configure_logging, get_logger
 from .playlist import Channel, build_search_index, filter_channels, load_playlist
-from .player import PlayerHandle, launch_player, probe_player
+from .player import (
+    PREFERRED_PLAYER_DEFAULT,
+    PlayerHandle,
+    launch_player,
+    probe_player,
+)
 from .providers import ConnectionStatus, fetch_connection_status
 from .log_viewer import LogViewer
 from .stats import StreamStats, StreamStatsAccumulator
@@ -575,7 +580,9 @@ class StreamdeckApp(App[None]):
         self._channel_window_start: int = 0
         self._probing_player: bool = False
         self._provider_colors: dict[str, str] = {}
-        self._preferred_player: Optional[str] = preferred_player
+        self._preferred_player: Optional[str] = (
+            preferred_player if preferred_player is not None else PREFERRED_PLAYER_DEFAULT
+        )
         log.debug("Inline stylesheet active (%d characters)", len(self.CSS))
         log.info(
             "StreamdeckApp initialized with %d provider(s); config path=%s",

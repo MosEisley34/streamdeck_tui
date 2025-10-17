@@ -5,6 +5,7 @@ import pytest
 
 from streamdeck_tui import player as player_module
 from streamdeck_tui.player import (
+    PREFERRED_PLAYER_DEFAULT,
     PlayerCommand,
     build_player_command,
     detect_player,
@@ -23,6 +24,22 @@ def test_detect_player_prefers_preferred(monkeypatch):
     monkeypatch.setattr(shutil, "which", fake_which)
     assert detect_player("mpv", candidates=["vlc", "mpv"]) == "/usr/bin/mpv"
     assert calls[0] == "mpv"
+
+
+def test_detect_player_prefers_absolute_default(monkeypatch):
+    calls = []
+
+    def fake_which(cmd: str):
+        calls.append(cmd)
+        if cmd == PREFERRED_PLAYER_DEFAULT:
+            return cmd
+        if cmd == "mpv":
+            return "/opt/wrapper/mpv"
+        return None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    assert detect_player(PREFERRED_PLAYER_DEFAULT) == PREFERRED_PLAYER_DEFAULT
+    assert calls[0] == PREFERRED_PLAYER_DEFAULT
 
 
 def test_build_player_command_raises_when_missing(monkeypatch):

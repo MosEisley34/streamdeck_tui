@@ -16,6 +16,8 @@ from .playlist import Channel
 from .logging_utils import get_logger
 
 
+PREFERRED_PLAYER_DEFAULT = "/usr/bin/mpv"
+
 DEFAULT_PLAYER_CANDIDATES: Sequence[str] = ("mpv", "vlc", "ffplay")
 
 PLAYER_PROBE_TIMEOUT_ENV = "STREAMDECK_TUI_PLAYER_PROBE_TIMEOUT"
@@ -45,13 +47,18 @@ class PlayerHandle:
     command: PlayerCommand
 
 
-def detect_player(preferred: Optional[str] = None, *, candidates: Iterable[str] = DEFAULT_PLAYER_CANDIDATES) -> Optional[str]:
+def detect_player(
+    preferred: Optional[str] = None,
+    *,
+    candidates: Iterable[str] = DEFAULT_PLAYER_CANDIDATES,
+) -> Optional[str]:
     """Return the path to the first available player executable."""
 
     search_order: list[str] = []
     if preferred:
-        log.debug("Preferred player requested: %s", preferred)
-        search_order.append(preferred)
+        preferred_str = str(preferred)
+        log.debug("Preferred player requested: %s", preferred_str)
+        search_order.append(preferred_str)
     for candidate in candidates:
         if candidate not in search_order:
             search_order.append(candidate)
@@ -221,6 +228,7 @@ def probe_player(preferred: Optional[str] = None) -> str:
 
 
 __all__ = [
+    "PREFERRED_PLAYER_DEFAULT",
     "PlayerCommand",
     "PlayerHandle",
     "detect_player",
