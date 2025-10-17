@@ -51,6 +51,14 @@ def test_build_player_command_adds_mpv_flags(monkeypatch):
         "--no-terminal",
     ]
     assert command.args[-1] == channel.url
+    ipc_flags = [arg for arg in command.args if arg.startswith("--input-ipc-server=")]
+    assert ipc_flags, "mpv commands should include an IPC server flag"
+    assert command.ipc_path is not None
+    assert command.ipc_path in ipc_flags[0]
+    assert command.cleanup_paths
+    for path in command.cleanup_paths:
+        assert path.exists()
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def test_probe_player_success(monkeypatch):

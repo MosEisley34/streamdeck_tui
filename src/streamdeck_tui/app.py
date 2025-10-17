@@ -11,9 +11,12 @@ if __name__ == "__main__" and __package__ is None:
     __package__ = "streamdeck_tui"
 
 import asyncio
-from asyncio.subprocess import Process
+import json
 import math
+import os
+import shutil
 import threading
+from asyncio.subprocess import Process
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, List, Optional, Sequence
@@ -49,15 +52,37 @@ from rich.markup import escape
 from .config import AppConfig, FavoriteChannel, ProviderConfig, CONFIG_PATH, save_config
 from .logging_utils import configure_logging, get_logger
 from .playlist import Channel, build_search_index, filter_channels, load_playlist
-from .player import launch_player, probe_player
+from .player import PlayerHandle, launch_player, probe_player
 from .providers import ConnectionStatus, fetch_connection_status
 from .log_viewer import LogViewer
+from .stats import StreamStats, StreamStatsAccumulator
 
 
 log = get_logger(__name__)
 
 
 RECENT_RELOAD_THRESHOLD = timedelta(hours=6)
+
+PROVIDER_COLOR_CYCLE: tuple[str, ...] = (
+    "cyan",
+    "green",
+    "magenta",
+    "yellow",
+    "bright_cyan",
+    "bright_magenta",
+    "bright_blue",
+    "bright_green",
+)
+
+RESOLUTION_BUCKETS: tuple[tuple[int, str, str], ...] = (
+    (2160, "2160p", "bright_magenta"),
+    (1440, "1440p", "magenta"),
+    (1080, "1080p", "green"),
+    (720, "720p", "yellow"),
+    (576, "576p", "bright_yellow"),
+    (480, "480p", "orange1"),
+    (360, "360p", "red"),
+)
 
 
 def _format_timedelta(delta: timedelta) -> str:
@@ -92,6 +117,29 @@ def _format_bytes(size: int) -> str:
             return f"{value:.1f} {unit}"
         value /= 1024.0
     return f"{value:.1f} PB"  # pragma: no cover - extremely large files
+
+
+def _format_bitrate(bitrate: Optional[float]) -> str:
+    """Render a bitrate value in Mbps or Kbps."""
+
+    if bitrate is None or bitrate <= 0:
+        return "–"
+    if bitrate >= 1_000_000:
+        return f"{bitrate / 1_000_000:.2f} Mbps"
+    if bitrate >= 1_000:
+        return f"{bitrate / 1_000:.1f} Kbps"
+    return f"{bitrate:.0f} bps"
+
+
+def resolution_tag_for_height(height: Optional[int]) -> Optional[tuple[str, str]]:
+    """Return a resolution label and colour for the given height."""
+
+    if height is None or height <= 0:
+        return None
+    for threshold, label, color in RESOLUTION_BUCKETS:
+        if height >= threshold:
+            return label, color
+    return f"{height}p", "white"
 
 
 @dataclass
@@ -194,6 +242,9 @@ class ChannelInfo(_ChannelSummary):
 class PlayingChannelInfo(_ChannelSummary):
     """Display information about the stream that is currently playing."""
 
+    stats: reactive[Optional[StreamStats]] = reactive(None)
+    provider_color: reactive[Optional[str]] = reactive(None)
+
     def __init__(self, **kwargs) -> None:
         super().__init__(
             title="Now playing",
@@ -201,6 +252,63 @@ class PlayingChannelInfo(_ChannelSummary):
             show_provider=True,
             **kwargs,
         )
+
+    def watch_stats(self, _: Optional[StreamStats]) -> None:
+        self._refresh_summary()
+
+    def watch_provider_color(self, _: Optional[str]) -> None:
+        self._refresh_summary()
+
+    def _refresh_summary(self) -> None:
+        lines = [f"[b]{self._title}[/b]"]
+        channel = self.channel
+        provider = self.provider
+        if channel is None:
+            lines.append(self._empty_message)
+            self.update("\n".join(lines))
+            return
+        if provider:
+            color = self.provider_color or "white"
+            lines.append(f"[{color}]{escape(provider)}[/]")
+        lines.append(escape(channel.name))
+        if channel.group:
+            lines.append(f"Group: {escape(channel.group)}")
+        stats = self.stats
+        if stats is not None:
+            lines.extend(self._format_stats(stats))
+        self.update("\n".join(lines))
+
+    def _format_stats(self, stats: StreamStats) -> list[str]:
+        lines: list[str] = []
+        resolution_line = self._format_resolution(stats)
+        if resolution_line:
+            lines.append(resolution_line)
+        bitrate_line = self._format_bitrate(stats)
+        if bitrate_line:
+            lines.append(bitrate_line)
+        return lines
+
+    def _format_resolution(self, stats: StreamStats) -> Optional[str]:
+        if stats.height is None and stats.width is None:
+            return None
+        tag = resolution_tag_for_height(stats.height)
+        if tag is None:
+            return None
+        label, color = tag
+        if stats.width and stats.height:
+            dims = f"{stats.width}×{stats.height}"
+        elif stats.height:
+            dims = f"{stats.height}p"
+        else:
+            dims = "Unknown"
+        return f"Resolution: [{color}]{label}[/] ({dims})"
+
+    def _format_bitrate(self, stats: StreamStats) -> Optional[str]:
+        if stats.live_bitrate is None and stats.average_bitrate is None:
+            return None
+        live = _format_bitrate(stats.live_bitrate)
+        average = _format_bitrate(stats.average_bitrate)
+        return f"Bitrate: Live {live} • Avg {average}"
 
 
 class StatusBar(Static):
@@ -228,6 +336,7 @@ class ProviderProgress(Static):
         progress: float,
         loaded: int,
         total: Optional[int],
+        markup: bool = False,
     ) -> None:
         self.styles.display = "block"
         clamped = max(0.0, min(progress, 1.0))
@@ -241,8 +350,9 @@ class ProviderProgress(Static):
             totals = f"{_format_bytes(loaded)} / {_format_bytes(total)}"
         else:
             totals = f"{_format_bytes(loaded)} received"
+        provider_label = provider if markup else escape(provider)
         text = (
-            f"[b]{escape(provider)}[/b] — {percent}% ({totals})\n"
+            f"[b]{provider_label}[/b] — {percent}% ({totals})\n"
             f"[{bar}]"
         )
         self.update(text)
@@ -445,9 +555,12 @@ class StreamdeckApp(App[None]):
         self._favorite_entries: list[FavoriteChannel] = list(config.favorites)
         self._active_tab: str = "channels"
         self._player_process: Optional[Process] = None
+        self._player_handle: Optional[PlayerHandle] = None
         self._player_task: Optional[asyncio.Task[None]] = None
+        self._player_monitor_task: Optional[asyncio.Task[None]] = None
         self._now_playing: Optional[tuple[str, Channel]] = None
         self._player_stop_requested: bool = False
+        self._stats_accumulator: Optional[StreamStatsAccumulator] = None
         self._worker: Optional[Worker] = None
         self._app_thread_id: int = threading.get_ident()
         self._log_viewer: Optional[LogViewer] = None
@@ -459,6 +572,7 @@ class StreamdeckApp(App[None]):
         self._pending_channel_operations: list[Callable[[], None]] = []
         self._channel_window_start: int = 0
         self._probing_player: bool = False
+        self._provider_colors: dict[str, str] = {}
         log.debug("Inline stylesheet active (%d characters)", len(self.CSS))
         log.info(
             "StreamdeckApp initialized with %d provider(s); config path=%s",
@@ -607,16 +721,165 @@ class StreamdeckApp(App[None]):
         if info is not None:
             info.provider = provider
             info.channel = channel
+            info.provider_color = self._provider_color(provider) if provider else None
+            if channel is None:
+                info.stats = None
         self._set_stop_buttons_enabled(channel is not None)
 
     def _clear_playing_info(self) -> None:
         self._update_playing_info(None, None)
+        self._clear_stream_stats()
 
     def _set_stop_buttons_enabled(self, enabled: bool) -> None:
         for selector in ("#channel-stop", "#playing-stop"):
             button = self._query_optional_widget(selector, Button)
             if button is not None:
                 button.disabled = not enabled
+
+    def _provider_color(self, provider: Optional[str]) -> Optional[str]:
+        if provider is None:
+            return None
+        if provider not in self._provider_colors:
+            index = len(self._provider_colors) % len(PROVIDER_COLOR_CYCLE)
+            self._provider_colors[provider] = PROVIDER_COLOR_CYCLE[index]
+        return self._provider_colors[provider]
+
+    def _provider_markup(self, provider: str) -> str:
+        color = self._provider_color(provider) or "white"
+        return f"[{color}]{escape(provider)}[/]"
+
+    def _clear_stream_stats(self) -> None:
+        self._stats_accumulator = None
+        info = self._query_optional_widget(PlayingChannelInfo)
+        if info is not None:
+            info.stats = None
+
+    def _ensure_stats_accumulator(self) -> StreamStatsAccumulator:
+        if self._stats_accumulator is None:
+            self._stats_accumulator = StreamStatsAccumulator()
+        return self._stats_accumulator
+
+    def _emit_stream_stats(self, stats: StreamStats) -> None:
+        info = self._query_optional_widget(PlayingChannelInfo)
+        if info is not None:
+            info.stats = stats
+
+    def _handle_bitrate_update(self, value: float) -> None:
+        accumulator = self._ensure_stats_accumulator()
+        stats = accumulator.push_bitrate(value)
+        self._emit_stream_stats(stats)
+
+    def _handle_resolution_update(
+        self, width: Optional[int], height: Optional[int]
+    ) -> None:
+        accumulator = self._ensure_stats_accumulator()
+        stats = accumulator.set_resolution(width, height)
+        self._emit_stream_stats(stats)
+
+    def _start_player_monitor(self, handle: PlayerHandle) -> None:
+        self._cancel_player_monitor()
+        ipc_path = handle.command.ipc_path
+        if not ipc_path:
+            return
+        if sys.platform == "win32":  # pragma: no cover - platform dependent
+            log.info("MPV IPC monitoring is not supported on Windows; skipping stats")
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - defensive guard for tests
+            log.debug("No running event loop available for player monitor")
+            return
+        self._player_monitor_task = loop.create_task(self._monitor_mpv_stats(ipc_path))
+
+    def _cancel_player_monitor(self) -> None:
+        task = self._player_monitor_task
+        if task is not None:
+            task.cancel()
+        self._player_monitor_task = None
+
+    def _cleanup_player_resources(self) -> None:
+        handle = self._player_handle
+        if handle is None:
+            return
+        for path in handle.command.cleanup_paths:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                elif path.exists():
+                    path.unlink()
+            except Exception:  # pragma: no cover - cleanup best-effort
+                log.debug("Failed to remove %s", path, exc_info=True)
+        self._player_handle = None
+
+    async def _connect_to_mpv_ipc(
+        self, ipc_path: str, retries: int = 50, delay: float = 0.1
+    ) -> Optional[tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
+        for attempt in range(retries):
+            try:
+                return await asyncio.open_unix_connection(ipc_path)
+            except (FileNotFoundError, ConnectionRefusedError):
+                await asyncio.sleep(delay)
+            except Exception as exc:  # pragma: no cover - diagnostic logging only
+                log.debug(
+                    "Attempt %s to connect to mpv IPC at %s failed: %s",
+                    attempt + 1,
+                    ipc_path,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+        log.warning("Unable to connect to mpv IPC server at %s", ipc_path)
+        return None
+
+    async def _monitor_mpv_stats(self, ipc_path: str) -> None:
+        if sys.platform == "win32":  # pragma: no cover - platform dependent
+            return
+        connection = await self._connect_to_mpv_ipc(ipc_path)
+        if connection is None:
+            return
+        reader, writer = connection
+        try:
+            commands = [
+                {"command": ["observe_property", 1, "video-bitrate"]},
+                {"command": ["observe_property", 2, "video-params"]},
+            ]
+            for command in commands:
+                writer.write((json.dumps(command) + "\n").encode("utf-8"))
+            await writer.drain()
+            while True:
+                line = await reader.readline()
+                if not line:
+                    if reader.at_eof():
+                        break
+                    await asyncio.sleep(0.1)
+                    continue
+                try:
+                    payload = json.loads(line.decode("utf-8"))
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("event") != "property-change":
+                    continue
+                name = payload.get("name")
+                data = payload.get("data")
+                if name == "video-bitrate" and isinstance(data, (int, float)):
+                    self._call_on_app_thread(self._handle_bitrate_update, float(data))
+                elif name == "video-params" and isinstance(data, dict):
+                    width = data.get("w")
+                    height = data.get("h")
+                    self._call_on_app_thread(
+                        self._handle_resolution_update,
+                        width,
+                        height,
+                    )
+        except asyncio.CancelledError:  # pragma: no cover - cancellation path
+            raise
+        except Exception:  # pragma: no cover - monitoring errors are logged
+            log.exception("Error while monitoring mpv IPC at %s", ipc_path)
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:  # pragma: no cover - cleanup best-effort
+                pass
 
     def _update_tab_buttons(self) -> None:
         """Refresh the visual state of the tab controls."""
@@ -721,7 +984,7 @@ class StreamdeckApp(App[None]):
 
         async def runner() -> None:
             try:
-                process = await launch_player(channel)
+                handle = await launch_player(channel)
             except Exception as exc:  # pragma: no cover - exercised via tests
                 self._call_on_app_thread(
                     self._handle_player_failure,
@@ -730,13 +993,15 @@ class StreamdeckApp(App[None]):
                     str(exc),
                 )
                 return
-            self._call_on_app_thread(self._handle_player_started, provider_name, channel, process)
+            self._call_on_app_thread(
+                self._handle_player_started, provider_name, channel, handle
+            )
             returncode: Optional[int] = None
             try:
-                returncode = await process.wait()
+                returncode = await handle.process.wait()
             except Exception as exc:  # pragma: no cover - process wait failures are rare
                 log.warning("Player wait failed for %s: %s", channel.name, exc)
-                returncode = getattr(process, "returncode", None)
+                returncode = getattr(handle.process, "returncode", None)
             finally:
                 self._call_on_app_thread(
                     self._handle_player_exit,
@@ -753,16 +1018,24 @@ class StreamdeckApp(App[None]):
         else:
             self._player_task = loop.create_task(runner())
 
-    def _handle_player_started(self, provider_name: str, channel: Channel, process: Process) -> None:
-        self._player_process = process
+    def _handle_player_started(
+        self, provider_name: str, channel: Channel, handle: PlayerHandle
+    ) -> None:
+        self._player_handle = handle
+        self._player_process = handle.process
         self._now_playing = (provider_name, channel)
+        self._clear_stream_stats()
+        self._stats_accumulator = StreamStatsAccumulator()
         self._update_playing_info(channel, provider_name)
         self._set_status(f"Playing {channel.name} from {provider_name}")
         log.info("Player launched for %s (%s)", channel.name, provider_name)
+        self._start_player_monitor(handle)
 
     def _handle_player_exit(
         self, provider_name: str, channel_name: str, returncode: Optional[int]
     ) -> None:
+        self._cancel_player_monitor()
+        self._cleanup_player_resources()
         self._player_process = None
         self._player_task = None
         self._now_playing = None
@@ -788,6 +1061,8 @@ class StreamdeckApp(App[None]):
             log.info("Player exited for %s (%s)", channel_name, provider_name)
 
     def _handle_player_failure(self, provider_name: str, channel_name: str, message: str) -> None:
+        self._cancel_player_monitor()
+        self._cleanup_player_resources()
         self._player_process = None
         self._player_task = None
         self._now_playing = None
@@ -805,6 +1080,7 @@ class StreamdeckApp(App[None]):
             self._player_stop_requested = True
         elif not has_process:
             self._player_stop_requested = False
+        self._cancel_player_monitor()
         if self._player_task:
             self._player_task.cancel()
             self._player_task = None
@@ -829,7 +1105,8 @@ class StreamdeckApp(App[None]):
             detail = f"{len(state.channels)} channels"
         else:
             detail = "not loaded"
-        return f"{state.config.name} ({detail})"
+        provider_markup = self._provider_markup(state.config.name)
+        return f"{provider_markup} ([dim]{escape(detail)}[/dim])"
 
     def _refresh_provider_list(self) -> None:
         log.debug("Refreshing provider list UI")
@@ -837,7 +1114,7 @@ class StreamdeckApp(App[None]):
         previous_index = list_view.index
         list_view.clear()
         for state in self._states:
-            list_view.append(ListItem(Label(self._provider_label(state))))
+            list_view.append(ListItem(Label(self._provider_label(state), markup=True)))
         if self._states:
             if self._active_index is not None:
                 list_view.index = max(0, min(self._active_index, len(self._states) - 1))
@@ -861,10 +1138,11 @@ class StreamdeckApp(App[None]):
             widget.hide()
             return
         widget.show_progress(
-            provider=state.config.name,
+            provider=self._provider_markup(state.config.name),
             progress=state.loading_progress,
             loaded=state.loading_bytes_read,
             total=state.loading_bytes_total,
+            markup=True,
         )
 
     def _clear_channels(self, message: str = "No provider selected") -> None:
