@@ -44,8 +44,9 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
     ) from exc
 
 from .config import AppConfig, FavoriteChannel, ProviderConfig, CONFIG_PATH, save_config
-from .logging_utils import get_logger
+from .logging_utils import configure_logging, get_logger
 from .playlist import Channel, build_search_index, filter_channels, load_playlist
+from .player import launch_player
 from .providers import ConnectionStatus, fetch_connection_status
 from .log_viewer import LogViewer
 
@@ -338,6 +339,10 @@ class StreamdeckApp(App[None]):
     def on_mount(self) -> None:
         log.debug("Application mounted")
         self._app_thread_id = threading.get_ident()
+        try:
+            self._log_viewer = self.query_one(LogViewer)
+        except Exception:  # pragma: no cover - log viewer may be missing in tests
+            self._log_viewer = None
         if self._log_viewer is not None:
             configure_logging(log_viewer=self._log_viewer, app=self)
         self._refresh_provider_list()
