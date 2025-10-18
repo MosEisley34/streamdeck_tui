@@ -52,10 +52,12 @@ def test_cli_main_configures_logging_without_ui(monkeypatch: pytest.MonkeyPatch,
             *,
             config_path: Any,
             preferred_player: Any = None,
+            theme: Any = None,
         ) -> None:
             self.config = config
             self.config_path = config_path
             self.preferred_player = preferred_player
+            self.theme = theme
             self.ran = False
             created_apps.append(self)
 
@@ -117,10 +119,12 @@ def test_cli_accepts_logging_overrides(
             *,
             config_path: Any,
             preferred_player: Any = None,
+            theme: Any = None,
         ) -> None:
             self.config = config
             self.config_path = config_path
             self.preferred_player = preferred_player
+            self.theme = theme
 
         def run(self) -> None:
             pass
@@ -173,10 +177,12 @@ def test_cli_passes_preferred_player(monkeypatch: pytest.MonkeyPatch) -> None:
             *,
             config_path: Any,
             preferred_player: Any = None,
+            theme: Any = None,
         ) -> None:
             self.config = config
             self.config_path = config_path
             self.preferred_player = preferred_player
+            self.theme = theme
             created_apps.append(self)
 
         def run(self) -> None:

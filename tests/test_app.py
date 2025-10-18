@@ -33,6 +33,17 @@ class DummyLogger:
         pass
 
 
+def test_custom_themes_registered() -> None:
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig
+
+    app = StreamdeckApp(AppConfig())
+
+    assert "solarized-dark" in app.available_themes
+    assert "solarized-light" in app.available_themes
+    assert app.theme == "solarized-dark"
+
+
 def test_tabbed_layout_and_log_viewer() -> None:
     """The main application should expose the tabbed UI and surface log messages."""
 
@@ -460,8 +471,16 @@ def test_apply_filter_reuses_cached_search_index(monkeypatch) -> None:
 
     recorded_indices: list[object] = []
 
-    def fake_filter(channels_arg, query_arg, search_index_arg=None):
+    def fake_filter(
+        channels_arg,
+        query_arg,
+        search_index_arg=None,
+        *,
+        return_indices=False,
+    ):
         recorded_indices.append(search_index_arg)
+        if return_indices:
+            return list(range(len(channels_arg)))
         return list(channels_arg)
 
     monkeypatch.setattr("streamdeck_tui.app.filter_channels", fake_filter)

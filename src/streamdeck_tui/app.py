@@ -67,6 +67,7 @@ from .player import (
 from .providers import ConnectionStatus, fetch_connection_status
 from .log_viewer import LogViewer
 from .stats import StreamStats, StreamStatsAccumulator
+from .themes import CUSTOM_THEMES, DEFAULT_THEME_NAME
 
 
 log = get_logger(__name__)
@@ -994,14 +995,38 @@ class StreamdeckApp(App[None]):
     ]
     _PROVIDERS_TAB_REQUIRED_STATUS = "Switch to the Providers tab to manage providers"
 
+    def _register_custom_themes(self) -> None:
+        for theme in CUSTOM_THEMES.values():
+            self.register_theme(theme)
+
+    def _apply_requested_theme(self, requested: Optional[str]) -> None:
+        preferred = requested or DEFAULT_THEME_NAME
+        theme = self.get_theme(preferred)
+        if theme is None:
+            if requested:
+                log.warning(
+                    "Requested theme '%s' is unavailable; falling back to %s",
+                    requested,
+                    DEFAULT_THEME_NAME,
+                )
+            fallback = self.get_theme(DEFAULT_THEME_NAME)
+            if fallback is not None:
+                self.theme = fallback.name
+            return
+        log.debug("Applying theme %s", theme.name)
+        self.theme = theme.name
+
     def __init__(
         self,
         config: AppConfig,
         *,
         config_path: Optional[Path] = None,
         preferred_player: Optional[str] = None,
+        theme: Optional[str] = None,
     ) -> None:
         super().__init__()
+        self._register_custom_themes()
+        self._apply_requested_theme(theme)
         self._config = config
         self._config_path = config_path or CONFIG_PATH
         self._states: list[ProviderState] = [ProviderState(provider) for provider in config.providers]
@@ -1011,6 +1036,7 @@ class StreamdeckApp(App[None]):
         )
         self.filtered_channels: list[tuple[str, Channel]] = []
         self._all_channels: list[tuple[str, Channel]] = []
+        self._all_channel_objects: list[Channel] = []
         self._all_channels_search_index: Optional[dict[str, set[int]]] = None
         self._favorite_entries: list[FavoriteChannel] = list(config.favorites)
         self._active_tab: str = "channels"
@@ -2160,8 +2186,7 @@ class StreamdeckApp(App[None]):
             else:
                 self._clear_active_channel_info()
             return
-        provider_lookup = {id(channel): provider for provider, channel in aggregated}
-        channels_only = [channel for _, channel in aggregated]
+        channels_only = self._all_channel_objects
         providers_in_view = {provider for provider, _ in aggregated}
         search_index_to_use = search_index
         if (
@@ -2170,12 +2195,21 @@ class StreamdeckApp(App[None]):
             and providers_in_view == {state.config.name}
         ):
             search_index_to_use = state.search_index
-        matches = filter_channels(channels_only, query, search_index_to_use)
-        filtered = [
-            (provider_lookup[id(channel)], channel)
-            for channel in matches
-            if id(channel) in provider_lookup
-        ]
+        match_indexes = filter_channels(
+            channels_only,
+            query,
+            search_index_to_use,
+            return_indices=True,
+        )
+        filtered: list[tuple[str, Channel]] = []
+        providers_in_result: set[str] = set()
+        total_available = len(aggregated)
+        for index in match_indexes:
+            if not (0 <= index < total_available):
+                continue
+            provider_name, channel = aggregated[index]
+            filtered.append((provider_name, channel))
+            providers_in_result.add(provider_name)
         self.filtered_channels = filtered
         if self._active_tab == "channels":
             if not self._channel_list_ready:
@@ -2191,7 +2225,7 @@ class StreamdeckApp(App[None]):
                 list_view.index = 0
             else:
                 self._start_channel_render(filtered)
-        provider_count = len({provider for provider, _ in filtered})
+        provider_count = len(providers_in_result)
         if filtered:
             status = f"Showing {len(filtered)} channel(s)"
             if provider_count:
@@ -2204,6 +2238,7 @@ class StreamdeckApp(App[None]):
         """Regenerate the aggregated channel cache across all providers."""
 
         aggregated: list[tuple[str, Channel]] = []
+        channel_objects: list[Channel] = []
         search_index: dict[str, set[int]] = {}
 
         for state in self._states:
@@ -2212,12 +2247,14 @@ class StreamdeckApp(App[None]):
                 continue
             provider_name = state.config.name
             for channel in channels:
-                position = len(aggregated)
+                position = len(channel_objects)
                 aggregated.append((provider_name, channel))
+                channel_objects.append(channel)
                 for token in channel._tokens:
                     search_index.setdefault(token, set()).add(position)
 
         self._all_channels = aggregated
+        self._all_channel_objects = channel_objects
         self._all_channels_search_index = search_index if aggregated else None
 
     def _start_channel_render(
@@ -2744,10 +2781,17 @@ class StreamdeckApp(App[None]):
         self.query_one("#search", Input).focus()
 
     def action_clear_search(self) -> None:
-        search = self.query_one("#search", Input)
-        search.value = ""
-        if self._active_tab == "channels":
+        log.debug("Clearing search input")
+        try:
+            search = self.query_one("#search", Input)
+        except Exception:
             self._apply_filter("")
+            return
+        if search.value:
+            search.value = ""
+        self._apply_filter("")
+        if not search.has_focus:
+            search.focus()
 
     def action_new_provider(self) -> None:
         if not self._require_active_tab(
@@ -3167,6 +3211,15 @@ class StreamdeckApp(App[None]):
         if self._states and 0 <= index < len(self._states):
             self._select_provider(index)
             log.debug("Provider list highlighted index %s", index)
+
+    @on(ListView.Selected, "#provider-list")
+    def _on_provider_selected(self, event: ListView.Selected) -> None:
+        index = event.index
+        if index is None or index == self._active_index:
+            return
+        if self._states and 0 <= index < len(self._states):
+            self._select_provider(index)
+            log.debug("Provider list selected index %s", index)
 
     @on(Input.Changed, "#search")
     def on_search_changed(self, event: Input.Changed) -> None:

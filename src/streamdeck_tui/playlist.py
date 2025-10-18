@@ -6,6 +6,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, List, Mapping, Optional, Sequence
+from typing import Literal, overload
 from urllib import request
 
 from .logging_utils import get_logger
@@ -251,16 +252,40 @@ def load_playlist(
     return parse_playlist(data.decode("utf8", errors="replace").splitlines())
 
 
+@overload
 def filter_channels(
     channels: Sequence[Channel],
     query: str,
     search_index: Optional[Mapping[str, set[int]]] = None,
+    *,
+    return_indices: Literal[False] = False,
 ) -> List[Channel]:
+    ...
+
+
+@overload
+def filter_channels(
+    channels: Sequence[Channel],
+    query: str,
+    search_index: Optional[Mapping[str, set[int]]] = None,
+    *,
+    return_indices: Literal[True],
+) -> List[int]:
+    ...
+
+
+def filter_channels(
+    channels: Sequence[Channel],
+    query: str,
+    search_index: Optional[Mapping[str, set[int]]] = None,
+    *,
+    return_indices: bool = False,
+) -> List[Channel] | List[int]:
     """Return channels matching the given search query."""
 
     tokens = normalize_tokens(query.strip())
     if not tokens:
-        results = list(channels)
+        results = list(range(len(channels))) if return_indices else list(channels)
         log.debug("Filter query empty; returning %d channels", len(results))
         return results
 
@@ -278,19 +303,20 @@ def filter_channels(
             if not candidate_ids:
                 break
 
-    results: List[Channel] = []
+    channel_results: List[Channel] = []
+    index_results: List[int] = []
     for idx, channel in enumerate(channels):
         if candidate_ids is not None and idx not in candidate_ids:
             continue
         if channel.matches_tokens(tokens):
-            results.append(channel)
+            if return_indices:
+                index_results.append(idx)
+            else:
+                channel_results.append(channel)
 
-    log.debug(
-        "Filter query '%s' matched %d channel(s)",
-        query,
-        len(results),
-    )
-    return results
+    match_count = len(index_results) if return_indices else len(channel_results)
+    log.debug("Filter query '%s' matched %d channel(s)", query, match_count)
+    return index_results if return_indices else channel_results
 
 
 __all__ = [
