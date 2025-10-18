@@ -800,3 +800,129 @@ def test_action_play_channel_handles_launch_failure(monkeypatch) -> None:
     assert app._player_process is None
     assert captured_preferred == ["mpv"]
     assert any("Failed to launch player" in status for status in statuses)
+
+
+def test_channel_list_shows_provider_names() -> None:
+    from textual.widgets import ListView
+
+    from streamdeck_tui.app import ChannelListItem, StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel, build_search_index
+
+    provider = ProviderConfig(name="Demo Provider", playlist_url="http://example.com")
+    channel = Channel(name="Sample", url="http://example.com/sample")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+    state = app._states[0]
+    state.channels = [channel]
+    state.search_index = build_search_index(state.channels)
+
+    async def run_app() -> str:
+        async with app.run_test() as pilot:
+            app._set_active_tab("channels")
+            app._rebuild_all_channels()
+            app._apply_filter("")
+            await pilot.pause()
+            list_view = app.query_one("#channel-list", ListView)
+            item = next(
+                child for child in list_view.children if isinstance(child, ChannelListItem)
+            )
+            rendered = item._label.render()
+            return getattr(rendered, "plain", str(rendered))
+
+    text = asyncio.run(run_app())
+    assert "Demo Provider" in text
+    assert "Sample" in text
+
+
+def test_stop_all_playback_stops_everything(monkeypatch) -> None:
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig
+
+    app = StreamdeckApp(AppConfig())
+    active_key = ("Provider", "http://example.com/stream")
+    app._player_handles[active_key] = object()
+
+    stopped: list[tuple[tuple[str, str] | None, bool]] = []
+
+    def fake_stop(
+        self: StreamdeckApp,
+        key=None,
+        *,
+        user_requested: bool = False,
+        suppress_status: bool = False,
+    ) -> None:
+        stopped.append((key, user_requested))
+
+    monkeypatch.setattr(StreamdeckApp, "_stop_player_process", fake_stop, raising=False)
+
+    app.action_stop_all_playback()
+
+    assert stopped == [(active_key, True)]
+
+
+def test_now_playing_modal_sorts_by_bitrate() -> None:
+    from streamdeck_tui.app import NowPlayingEntry, NowPlayingModal, StreamdeckApp
+    from streamdeck_tui.config import AppConfig
+    from streamdeck_tui.playlist import Channel
+    from streamdeck_tui.stats import StreamStats
+
+    app = StreamdeckApp(AppConfig())
+    modal = NowPlayingModal(app)
+    entries = [
+        NowPlayingEntry(
+            key=("P1", "url1"),
+            provider="Provider A",
+            channel=Channel(name="A", url="url1"),
+            stats=StreamStats(average_bitrate=1_000_000),
+        ),
+        NowPlayingEntry(
+            key=("P2", "url2"),
+            provider="Provider B",
+            channel=Channel(name="B", url="url2"),
+            stats=StreamStats(average_bitrate=2_000_000),
+        ),
+        NowPlayingEntry(
+            key=("P3", "url3"),
+            provider="Provider C",
+            channel=Channel(name="C", url="url3"),
+            stats=StreamStats(),
+        ),
+    ]
+
+    modal.set_entries(entries)
+
+    ordered_keys = [entry.key for entry in modal._entries]
+    assert ordered_keys == [("P2", "url2"), ("P1", "url1"), ("P3", "url3")]
+
+
+def test_search_down_arrow_focuses_channel_list() -> None:
+    from textual.widgets import Input, ListView
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel, build_search_index
+
+    provider = ProviderConfig(name="Demo Provider", playlist_url="http://example.com")
+    channel = Channel(name="Sample", url="http://example.com/sample")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+    state = app._states[0]
+    state.channels = [channel]
+    state.search_index = build_search_index(state.channels)
+
+    async def run_app() -> bool:
+        async with app.run_test() as pilot:
+            app._set_active_tab("channels")
+            app._rebuild_all_channels()
+            app._apply_filter("")
+            await pilot.pause()
+            search = app.query_one("#search", Input)
+            app.action_focus_search()
+            await pilot.pause()
+            assert search.has_focus
+            await pilot.press("down")
+            await pilot.pause()
+            list_view = app.query_one("#channel-list", ListView)
+            return list_view.has_focus
+
+    has_focus = asyncio.run(run_app())
+    assert has_focus
