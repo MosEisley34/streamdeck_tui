@@ -171,12 +171,20 @@ class ChannelListItem(ListItem):
     """Render an IPTV channel in the list."""
 
     def __init__(
-        self, provider_name: str, channel: Channel, *, queued: bool = False
+        self,
+        provider_name: str,
+        channel: Channel,
+        *,
+        queued: bool = False,
+        provider_markup: Optional[str] = None,
     ) -> None:
         self.channel = channel
         self.provider_name = provider_name
+        self._provider_markup = provider_markup
         self._queued = queued
-        self._label = Label(channel.name, id="channel-name", markup=False)
+        # Enable markup so provider colours can be applied while ensuring
+        # channel names are escaped to avoid injection of markup sequences.
+        self._label = Label("", id="channel-name", markup=True)
         super().__init__(self._label)
         self._refresh_label()
 
@@ -190,8 +198,12 @@ class ChannelListItem(ListItem):
 
     def _refresh_label(self) -> None:
         prefix = "⏳ " if self._queued else ""
-        provider = self.provider_name
-        name = self.channel.name
+        provider = (
+            self._provider_markup
+            if self._provider_markup is not None
+            else escape(self.provider_name)
+        )
+        name = escape(self.channel.name)
         self._label.update(f"{prefix}{provider} • {name}")
 
 
@@ -2364,6 +2376,7 @@ class StreamdeckApp(App[None]):
                             provider_name,
                             channel,
                             queued=self._is_channel_queued(provider_name, channel),
+                            provider_markup=self._provider_markup(provider_name),
                         )
                     )
             target_index = selected_global_index
