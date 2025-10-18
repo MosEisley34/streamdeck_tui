@@ -57,7 +57,13 @@ from rich.markup import escape
 
 from .config import AppConfig, FavoriteChannel, ProviderConfig, CONFIG_PATH, save_config
 from .logging_utils import configure_logging, get_logger
-from .playlist import Channel, build_search_index, filter_channels, load_playlist
+from .playlist import (
+    Channel,
+    ChannelSearchIndex,
+    build_search_index,
+    filter_channels,
+    load_playlist,
+)
 from .player import (
     PREFERRED_PLAYER_DEFAULT,
     PlayerHandle,
@@ -161,7 +167,7 @@ class ProviderState:
     last_error: Optional[str] = None
     loading: bool = False
     last_loaded_at: Optional[datetime] = None
-    search_index: Optional[dict[str, set[int]]] = None
+    search_index: Optional[ChannelSearchIndex] = None
     loading_progress: float = 0.0
     loading_bytes_read: int = 0
     loading_bytes_total: Optional[int] = None
@@ -1037,7 +1043,7 @@ class StreamdeckApp(App[None]):
         self.filtered_channels: list[tuple[str, Channel]] = []
         self._all_channels: list[tuple[str, Channel]] = []
         self._all_channel_objects: list[Channel] = []
-        self._all_channels_search_index: Optional[dict[str, set[int]]] = None
+        self._all_channels_search_index: Optional[ChannelSearchIndex] = None
         self._favorite_entries: list[FavoriteChannel] = list(config.favorites)
         self._active_tab: str = "channels"
         self._queued_channels: set[tuple[str, str]] = set()
@@ -2239,7 +2245,6 @@ class StreamdeckApp(App[None]):
 
         aggregated: list[tuple[str, Channel]] = []
         channel_objects: list[Channel] = []
-        search_index: dict[str, set[int]] = {}
 
         for state in self._states:
             channels = state.channels
@@ -2250,12 +2255,14 @@ class StreamdeckApp(App[None]):
                 position = len(channel_objects)
                 aggregated.append((provider_name, channel))
                 channel_objects.append(channel)
-                for token in channel._tokens:
-                    search_index.setdefault(token, set()).add(position)
 
         self._all_channels = aggregated
         self._all_channel_objects = channel_objects
-        self._all_channels_search_index = search_index if aggregated else None
+        if self._all_channels_search_index is not None:
+            self._all_channels_search_index.close()
+        self._all_channels_search_index = (
+            build_search_index(channel_objects) if aggregated else None
+        )
 
     def _start_channel_render(
         self, channels: Sequence[tuple[str, Channel]]
@@ -2642,6 +2649,8 @@ class StreamdeckApp(App[None]):
         state.loading = False
         state.last_error = message
         state.channels = None
+        if state.search_index is not None:
+            state.search_index.close()
         state.search_index = None
         state.last_loaded_at = None
         state.loading_progress = 0.0
@@ -2663,6 +2672,8 @@ class StreamdeckApp(App[None]):
         state.loading = False
         state.last_error = None
         state.channels = channels
+        if state.search_index is not None:
+            state.search_index.close()
         state.search_index = build_search_index(channels)
         self._rebuild_all_channels()
         state.last_loaded_at = datetime.now(tz=timezone.utc)
