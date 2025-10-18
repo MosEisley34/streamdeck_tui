@@ -48,14 +48,14 @@ TabPane {
 }
 
 #channel-list {
-    width: 3fr;
-    min-width: 48;
+    width: 2fr;
+    min-width: 42;
 }
 
 #channel-sidebar {
     layout: vertical;
-    width: 1fr;
-    min-width: 32;
+    width: 3fr;
+    min-width: 36;
 }
 
 #channel-info,
@@ -70,7 +70,14 @@ TabPane {
 #playing-channels {
     border: heavy $surface;
     width: 1fr;
-    min-height: 5;
+    min-height: 8;
+    height: 1fr;
+    overflow-y: auto;
+}
+
+#channel-info,
+#selected-channels {
+    margin-bottom: 1;
 }
 
 #channel-actions {
