@@ -816,7 +816,9 @@ def test_channel_list_shows_provider_names() -> None:
     state.channels = [channel]
     state.search_index = build_search_index(state.channels)
 
-    async def run_app() -> str:
+    expected_color = app._provider_color(provider.name)
+
+    async def run_app() -> "Text":
         async with app.run_test() as pilot:
             app._set_active_tab("channels")
             app._rebuild_all_channels()
@@ -826,12 +828,14 @@ def test_channel_list_shows_provider_names() -> None:
             item = next(
                 child for child in list_view.children if isinstance(child, ChannelListItem)
             )
-            rendered = item._label.render()
-            return getattr(rendered, "plain", str(rendered))
+            return item._label.render()
 
-    text = asyncio.run(run_app())
+    rendered = asyncio.run(run_app())
+    text = getattr(rendered, "plain", str(rendered))
     assert "Demo Provider" in text
     assert "Sample" in text
+    spans = getattr(rendered, "spans", ())
+    assert any(span.style == expected_color for span in spans)
 
 
 def test_stop_all_playback_stops_everything(monkeypatch) -> None:
