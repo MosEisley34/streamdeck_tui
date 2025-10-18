@@ -19,10 +19,10 @@ import threading
 from asyncio.subprocess import Process
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Any, Callable, Iterable, List, Optional, Sequence
 
 try:
-    from textual import on
+    from textual import events, on
     from textual.actions import SkipAction
     from textual.app import App, ComposeResult
     from textual.binding import Binding
@@ -170,8 +170,11 @@ class ProviderState:
 class ChannelListItem(ListItem):
     """Render an IPTV channel in the list."""
 
-    def __init__(self, channel: Channel, *, queued: bool = False) -> None:
+    def __init__(
+        self, provider_name: str, channel: Channel, *, queued: bool = False
+    ) -> None:
         self.channel = channel
+        self.provider_name = provider_name
         self._queued = queued
         self._label = Label(channel.name, id="channel-name", markup=False)
         super().__init__(self._label)
@@ -187,7 +190,28 @@ class ChannelListItem(ListItem):
 
     def _refresh_label(self) -> None:
         prefix = "⏳ " if self._queued else ""
-        self._label.update(f"{prefix}{self.channel.name}")
+        provider = self.provider_name
+        name = self.channel.name
+        self._label.update(f"{prefix}{provider} • {name}")
+
+
+class SearchInput(Input):
+    """Channel search field that hands arrow navigation to the results list."""
+
+    def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
+        if event.key in ("down", "up"):
+            app = getattr(self, "app", None)
+            if isinstance(app, StreamdeckApp):
+                event.stop()
+                app.call_after_refresh(
+                    app._focus_channel_list, select_last=event.key == "up"
+                )
+                return
+        handler = getattr(super(), "on_key", None)
+        if callable(handler):
+            handler(event)
+        else:
+            self._forward_event(event)
 
 
 class ChannelListView(ListView):
@@ -379,6 +403,199 @@ class PlayingChannelInfo(_ChannelSummary):
         live = _format_bitrate(stats.live_bitrate)
         average = _format_bitrate(stats.average_bitrate)
         return f"Bitrate: Live {live} • Avg {average}"
+
+
+@dataclass
+class NowPlayingEntry:
+    """Snapshot of an active playback session for modal display."""
+
+    key: tuple[str, str]
+    provider: str
+    channel: Channel
+    stats: Optional[StreamStats] = None
+
+    @property
+    def bitrate_score(self) -> float:
+        if self.stats and self.stats.average_bitrate:
+            return self.stats.average_bitrate
+        return 0.0
+
+
+class NowPlayingListItem(ListItem):
+    """Render a playing channel inside the management modal."""
+
+    def __init__(self, app: "StreamdeckApp", entry: NowPlayingEntry) -> None:
+        self._app = app
+        self.entry = entry
+        self._label = Label("", markup=True)
+        super().__init__(self._label)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        provider_markup = self._app._provider_markup(self.entry.provider)
+        channel_name = escape(self.entry.channel.name)
+        lines = [f"{provider_markup} • {channel_name}"]
+        if self.entry.channel.group:
+            lines.append(f"Group: {escape(self.entry.channel.group)}")
+        stats = self.entry.stats
+        if stats is not None:
+            lines.extend(self._app._format_stream_stats(stats))
+        self._label.update("\n".join(lines))
+
+
+class NowPlayingModal(ModalScreen[None]):
+    """Modal screen used to manage currently playing channels."""
+
+    def __init__(self, app: "StreamdeckApp") -> None:
+        super().__init__()
+        self._app = app
+        self._entries: list[NowPlayingEntry] = []
+        self._sort_by_bitrate: bool = True
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Label("Now playing", id="now-playing-title"),
+            ListView(id="now-playing-list"),
+            Static(
+                "Sort by bitrate to close the lowest quality streams manually.",
+                id="now-playing-help",
+            ),
+            Horizontal(
+                Button(
+                    "Refresh bitrate order",
+                    id="now-playing-sort",
+                ),
+                Button(
+                    "Stop selected",
+                    id="now-playing-stop",
+                    variant="warning",
+                ),
+                Button(
+                    "Stop all",
+                    id="now-playing-stop-all",
+                    variant="warning",
+                ),
+                Button("Close", id="now-playing-close", variant="primary"),
+                id="now-playing-actions",
+            ),
+        )
+
+    def on_mount(self) -> None:  # pragma: no cover - UI callback
+        self._refresh_list()
+        self._refresh_help()
+
+    def on_unmount(self) -> None:  # pragma: no cover - UI callback
+        self._app._on_now_playing_modal_closed(self)
+
+    def set_entries(self, entries: Sequence[NowPlayingEntry]) -> None:
+        self._entries = list(entries)
+        self._apply_sort()
+        self._refresh_list()
+        self._refresh_help()
+
+    def _apply_sort(self) -> None:
+        if not self._sort_by_bitrate:
+            return
+        self._entries.sort(key=lambda entry: entry.bitrate_score, reverse=True)
+
+    def _get_list_view(self) -> Optional[ListView]:
+        try:
+            return self.query_one("#now-playing-list", ListView)
+        except Exception:
+            return None
+
+    def _refresh_list(self) -> None:
+        list_view = self._get_list_view()
+        if list_view is None:
+            return
+        current_key: Optional[tuple[str, str]] = None
+        index = getattr(list_view, "index", None)
+        if index is not None and 0 <= index < len(self._entries):
+            current_key = self._entries[index].key
+        list_view.clear()
+        if not self._entries:
+            list_view.index = None
+            self._update_controls()
+            return
+        for entry in self._entries:
+            list_view.append(NowPlayingListItem(self._app, entry))
+        if current_key is not None:
+            for idx, entry in enumerate(self._entries):
+                if entry.key == current_key:
+                    list_view.index = idx
+                    break
+        if getattr(list_view, "index", None) is None:
+            list_view.index = 0
+        self._update_controls()
+
+    def _refresh_help(self) -> None:
+        try:
+            help_text = self.query_one("#now-playing-help", Static)
+        except Exception:
+            return
+        if self._entries:
+            help_text.update(
+                "Sort by bitrate to close the lowest quality streams manually."
+            )
+        else:
+            help_text.update("No streams are currently playing.")
+
+    def _update_controls(self) -> None:
+        list_view = self._get_list_view()
+        selected_index: Optional[int] = None
+        if list_view is not None:
+            selected_index = getattr(list_view, "index", None)
+        has_entries = bool(self._entries)
+        selected_valid = (
+            selected_index is not None
+            and 0 <= selected_index < len(self._entries)
+        )
+        for selector, enabled in (
+            ("#now-playing-sort", has_entries),
+            ("#now-playing-stop", has_entries and selected_valid),
+            ("#now-playing-stop-all", has_entries),
+        ):
+            try:
+                button = self.query_one(selector, Button)
+            except Exception:
+                continue
+            button.disabled = not enabled
+
+    def _selected_entry(self) -> Optional[NowPlayingEntry]:
+        list_view = self._get_list_view()
+        if list_view is None:
+            return None
+        index = getattr(list_view, "index", None)
+        if index is None or not (0 <= index < len(self._entries)):
+            return None
+        return self._entries[index]
+
+    @on(ListView.Highlighted, "#now-playing-list")
+    def _on_highlighted(self, _: ListView.Highlighted) -> None:  # pragma: no cover
+        self._update_controls()
+
+    @on(Button.Pressed, "#now-playing-sort")
+    def _on_sort_pressed(self, _: Button.Pressed) -> None:  # pragma: no cover
+        self._sort_by_bitrate = True
+        self._apply_sort()
+        self._refresh_list()
+
+    @on(Button.Pressed, "#now-playing-stop")
+    def _on_stop_selected(self, _: Button.Pressed) -> None:  # pragma: no cover
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        self._app._stop_channels([entry.key])
+        self.set_entries(self._app._collect_now_playing_entries())
+
+    @on(Button.Pressed, "#now-playing-stop-all")
+    def _on_stop_all(self, _: Button.Pressed) -> None:  # pragma: no cover
+        self._app.action_stop_all_playback()
+        self.set_entries(self._app._collect_now_playing_entries())
+
+    @on(Button.Pressed, "#now-playing-close")
+    def _on_close(self, _: Button.Pressed) -> None:  # pragma: no cover
+        self.dismiss(None)
 
 
 class StatusBar(Static):
@@ -645,7 +862,20 @@ TabPane {
     layout: horizontal;
 }
 
-#playing-stop {
+#playing-actions {
+    layout: horizontal;
+}
+
+#playing-actions Button {
+    width: 1fr;
+}
+
+#now-playing-actions {
+    layout: horizontal;
+    margin-top: 1;
+}
+
+#now-playing-actions Button {
     width: 1fr;
 }
 
@@ -689,9 +919,11 @@ class StreamdeckApp(App[None]):
         Binding("r", "reload_provider", "Reload provider"),
         Binding("p", "play_channel", "Play"),
         Binding("space", "toggle_channel_queue", "Queue channel"),
-        Binding("s", "stop_channel", "Stop"),
+        Binding("s", "stop_channel", "Stop selected"),
+        Binding("ctrl+shift+s", "stop_all_playback", "Stop all"),
         Binding("f", "toggle_favorite", "Favorite"),
         Binding("ctrl+shift+p", "probe_player", "Probe player"),
+        Binding("m", "show_now_playing", "Manage playback"),
         Binding("down", "focus_active_tab_content", show=False, priority=True),
     ]
     _PROVIDERS_TAB_REQUIRED_STATUS = "Switch to the Providers tab to manage providers"
@@ -727,6 +959,7 @@ class StreamdeckApp(App[None]):
             tuple[str, str], StreamStatsAccumulator
         ] = {}
         self._latest_stats: dict[tuple[str, str], StreamStats] = {}
+        self._now_playing_modal: Optional[NowPlayingModal] = None
         self._player_process: Optional[Process] = None
         self._worker: Optional[Worker] = None
         self._app_thread_id: int = threading.get_ident()
@@ -771,7 +1004,7 @@ class StreamdeckApp(App[None]):
                         yield ProviderForm(id="provider-form")
             with TabPane("Channel browser", id="channels-tab"):
                 with Vertical(id="channels-pane"):
-                    yield Input(placeholder="Search channels…", id="search")
+                    yield SearchInput(placeholder="Search channels…", id="search")
                     with Horizontal(id="channel-browser"):
                         yield ChannelListView(id="channel-list")
                         with Vertical(id="channel-sidebar"):
@@ -784,7 +1017,7 @@ class StreamdeckApp(App[None]):
                                     variant="success",
                                 )
                                 yield Button(
-                                    "Stop",
+                                    "Stop selected",
                                     id="channel-stop",
                                     variant="warning",
                                     disabled=True,
@@ -799,12 +1032,18 @@ class StreamdeckApp(App[None]):
                                     variant="default",
                                 )
                             yield PlayingChannelsPanel(id="playing-channels")
-                            yield Button(
-                                "Stop playback",
-                                id="playing-stop",
-                                variant="warning",
-                                disabled=True,
-                            )
+                            with Horizontal(id="playing-actions"):
+                                yield Button(
+                                    "Manage playback",
+                                    id="playing-manage",
+                                    disabled=True,
+                                )
+                                yield Button(
+                                    "Stop all",
+                                    id="playing-stop",
+                                    variant="warning",
+                                    disabled=True,
+                                )
             with TabPane("Favorites", id="favorites-tab"):
                 with Vertical(id="favorites-pane"):
                     yield ListView(id="favorites-list")
@@ -850,6 +1089,15 @@ class StreamdeckApp(App[None]):
         provider_list = self._query_optional_widget("#provider-list", ListView)
         if provider_list is not None:
             provider_list.focus()
+
+    def _focus_channel_list(self, *, select_last: bool = False) -> None:
+        list_view = self._query_optional_widget("#channel-list", ListView)
+        if list_view is None:
+            return
+        if list_view.children and getattr(list_view, "index", None) is None:
+            target = len(list_view.children) - 1 if select_last else 0
+            list_view.index = max(0, target)
+        list_view.focus()
 
     def _update_provider_form_visibility(self, visible: bool) -> None:
         container = self._query_optional_widget("#provider-form-container", Vertical)
@@ -1042,6 +1290,7 @@ class StreamdeckApp(App[None]):
             entries.append(" • ".join(parts))
         panel.update_entries(entries)
         self._set_stop_buttons_enabled(bool(self._playing_channels))
+        self._update_now_playing_modal_entries()
         self._refresh_selected_channels_panel()
 
     def _stats_accumulator_for_key(
@@ -1133,10 +1382,62 @@ class StreamdeckApp(App[None]):
         self._player_process = None
 
     def _set_stop_buttons_enabled(self, enabled: bool) -> None:
-        for selector in ("#channel-stop", "#playing-stop"):
+        for selector in ("#channel-stop", "#playing-stop", "#playing-manage"):
             button = self._query_optional_widget(selector, Button)
             if button is not None:
                 button.disabled = not enabled
+
+    def _active_playback_keys(self) -> set[tuple[str, str]]:
+        return set(self._player_handles.keys()) | set(self._player_tasks.keys())
+
+    def _stop_channels(self, keys: Iterable[tuple[str, str]]) -> None:
+        active_keys = self._active_playback_keys()
+        keys_to_stop = [key for key in keys if key in active_keys]
+        if not keys_to_stop:
+            return
+        stopped_names: list[str] = []
+        for key in keys_to_stop:
+            provider, channel_identifier = key
+            channel_obj = self._find_channel_by_identifier(provider, channel_identifier)
+            if channel_obj is not None:
+                stopped_names.append(channel_obj.name)
+            self._stop_player_process(key, user_requested=True)
+        if not stopped_names:
+            self._set_status("Stopping playback")
+            log.info("Stop requested for %d channel(s)", len(keys_to_stop))
+        elif len(stopped_names) == 1:
+            self._set_status(f"Stopping playback for {stopped_names[0]}")
+            log.info("Stop requested for %s", stopped_names[0])
+        else:
+            self._set_status(
+                f"Stopping playback for {len(stopped_names)} channels"
+            )
+            log.info(
+                "Stop requested for channels: %s", ", ".join(stopped_names)
+            )
+
+    def _collect_now_playing_entries(self) -> list[NowPlayingEntry]:
+        entries: list[NowPlayingEntry] = []
+        for key, (provider_name, channel) in self._playing_channels.items():
+            entries.append(
+                NowPlayingEntry(
+                    key=key,
+                    provider=provider_name,
+                    channel=channel,
+                    stats=self._latest_stats.get(key),
+                )
+            )
+        return entries
+
+    def _update_now_playing_modal_entries(self) -> None:
+        modal = self._now_playing_modal
+        if modal is None:
+            return
+        modal.set_entries(self._collect_now_playing_entries())
+
+    def _on_now_playing_modal_closed(self, modal: NowPlayingModal) -> None:
+        if self._now_playing_modal is modal:
+            self._now_playing_modal = None
 
     def _provider_color(self, provider: Optional[str]) -> Optional[str]:
         if provider is None:
@@ -1935,6 +2236,7 @@ class StreamdeckApp(App[None]):
                         channel = entry  # type: ignore[assignment]
                     list_view.append(
                         ChannelListItem(
+                            provider_name,
                             channel,
                             queued=self._is_channel_queued(provider_name, channel),
                         )
@@ -2418,43 +2720,35 @@ class StreamdeckApp(App[None]):
         self._start_player_for_channel(provider_name, channel)
 
     def action_stop_channel(self) -> None:
-        active_keys = set(self._player_handles.keys()) | set(self._player_tasks.keys())
+        active_keys = self._active_playback_keys()
         if not active_keys:
             self._set_status("No active player to stop")
             return
         provider_name, channel, _ = self._get_selected_entry()
-        keys_to_stop: list[tuple[str, str]] = []
-        if provider_name is not None and channel is not None:
-            key = self._channel_queue_key(provider_name, channel)
-            if key in active_keys:
-                keys_to_stop.append(key)
-        if not keys_to_stop:
-            if self._playing_channels:
-                keys_to_stop = [
-                    key for key in self._playing_channels.keys() if key in active_keys
-                ]
-            if not keys_to_stop:
-                keys_to_stop = list(active_keys)
-        stopped_names: list[str] = []
-        for key in keys_to_stop:
-            provider, channel_identifier = key
-            channel_obj = self._find_channel_by_identifier(provider, channel_identifier)
-            if channel_obj is not None:
-                stopped_names.append(channel_obj.name)
-            self._stop_player_process(key, user_requested=True)
-        if not stopped_names:
-            self._set_status("Stopping playback")
-            log.info("Stop requested for %d channel(s)", len(keys_to_stop))
-        elif len(stopped_names) == 1:
-            self._set_status(f"Stopping playback for {stopped_names[0]}")
-            log.info("Stop requested for %s", stopped_names[0])
-        else:
-            self._set_status(
-                f"Stopping playback for {len(stopped_names)} channels"
-            )
-            log.info(
-                "Stop requested for channels: %s", ", ".join(stopped_names)
-            )
+        if provider_name is None or channel is None:
+            self._set_status("Select a channel to stop")
+            return
+        key = self._channel_queue_key(provider_name, channel)
+        if key not in active_keys:
+            self._set_status(f"{channel.name} is not currently playing")
+            return
+        self._stop_channels([key])
+
+    def action_stop_all_playback(self) -> None:
+        active_keys = self._active_playback_keys()
+        if not active_keys:
+            self._set_status("No active player to stop")
+            return
+        self._stop_channels(active_keys)
+
+    def action_show_now_playing(self) -> None:
+        if not self._playing_channels:
+            self._set_status("No streams currently playing")
+            return
+        modal = NowPlayingModal(self)
+        modal.set_entries(self._collect_now_playing_entries())
+        self._now_playing_modal = modal
+        self.push_screen(modal)
 
     def action_toggle_favorite(self) -> None:
         provider_name, channel, favorite_entry = self._get_selected_entry()
@@ -2628,7 +2922,11 @@ class StreamdeckApp(App[None]):
 
     @on(Button.Pressed, "#playing-stop")
     def _on_playing_stop(self, _: Button.Pressed) -> None:
-        self.action_stop_channel()
+        self.action_stop_all_playback()
+
+    @on(Button.Pressed, "#playing-manage")
+    def _on_playing_manage(self, _: Button.Pressed) -> None:
+        self.action_show_now_playing()
 
     @on(Button.Pressed, "#channel-probe")
     def _on_channel_probe(self, _: Button.Pressed) -> None:

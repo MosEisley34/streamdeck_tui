@@ -77,7 +77,20 @@ TabPane {
     layout: horizontal;
 }
 
-#playing-stop {
+#playing-actions {
+    layout: horizontal;
+}
+
+#playing-actions Button {
+    width: 1fr;
+}
+
+#now-playing-actions {
+    layout: horizontal;
+    margin-top: 1;
+}
+
+#now-playing-actions Button {
     width: 1fr;
 }
 
