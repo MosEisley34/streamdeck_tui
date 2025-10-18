@@ -45,6 +45,14 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
             " falls back to auto-detect)"
         ),
     )
+    parser.add_argument(
+        "--theme",
+        default=None,
+        help=(
+            "Select the application theme. Available options include "
+            "'solarized-dark' and 'solarized-light'."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -61,6 +69,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         config,
         config_path=args.config,
         preferred_player=args.preferred_player,
+        theme=args.theme,
     )
     log.info("Launching Textual application")
     try:

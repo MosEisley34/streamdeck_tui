@@ -66,6 +66,16 @@ def test_filter_channels_reuses_normalized_tokens(monkeypatch):
     assert all(tokens is first_tokens for tokens in captured_tokens)
 
 
+def test_filter_channels_can_return_indices() -> None:
+    channels = parse_playlist(SAMPLE_PLAYLIST)
+    indices = filter_channels(channels, "Channel", return_indices=True)
+    assert indices == [0, 1]
+    sports_only = filter_channels(channels, "Sports", return_indices=True)
+    assert sports_only == [1]
+    empty = filter_channels(channels, "", return_indices=True)
+    assert empty == [0, 1]
+
+
 def test_normalize_tokens_handles_punctuation_and_diacritics():
     tokens = normalize_tokens("ESPN 1080 / 1080 ESPN")
     assert tokens == ["espn", "1080"]
