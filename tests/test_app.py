@@ -44,6 +44,21 @@ def test_custom_themes_registered() -> None:
     assert app.theme == "solarized-dark"
 
 
+def test_search_input_allows_editing_keys_without_forwarding() -> None:
+    """Editing keys should remain within the input widget for processing."""
+
+    from textual import events
+
+    from streamdeck_tui.app import SearchInput
+
+    widget = SearchInput()
+    event = events.Key("backspace", None)
+
+    asyncio.run(widget.on_key(event))
+
+    assert not event.is_forwarded
+
+
 def test_tabbed_layout_and_log_viewer() -> None:
     """The main application should expose the tabbed UI and surface log messages."""
 

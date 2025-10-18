@@ -12,6 +12,7 @@ if __name__ == "__main__" and __package__ is None:
     __package__ = "streamdeck_tui"
 
 import asyncio
+import inspect
 import colorsys
 import hashlib
 import json
@@ -217,7 +218,7 @@ class ChannelListItem(ListItem):
 class SearchInput(Input):
     """Channel search field that hands arrow navigation to the results list."""
 
-    def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
+    async def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
         if event.key in ("down", "up"):
             app = getattr(self, "app", None)
             if isinstance(app, StreamdeckApp):
@@ -228,9 +229,9 @@ class SearchInput(Input):
                 return
         handler = getattr(super(), "on_key", None)
         if callable(handler):
-            handler(event)
-        else:
-            self._forward_event(event)
+            result = handler(event)
+            if inspect.isawaitable(result):
+                await result
 
 
 class ChannelListView(ListView):
