@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from collections import deque
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -11,6 +12,8 @@ if __name__ == "__main__" and __package__ is None:
     __package__ = "streamdeck_tui"
 
 import asyncio
+import colorsys
+import hashlib
 import json
 import math
 import os
@@ -28,6 +31,7 @@ try:
     from textual.binding import Binding
     from textual.containers import Horizontal, Vertical
     from textual.reactive import reactive
+    from textual.timer import Timer
     from textual.worker import Worker
     from textual.screen import ModalScreen
     from textual.widgets import (
@@ -70,16 +74,12 @@ log = get_logger(__name__)
 
 RECENT_RELOAD_THRESHOLD = timedelta(hours=6)
 
-PROVIDER_COLOR_CYCLE: tuple[str, ...] = (
-    "cyan",
-    "green",
-    "magenta",
-    "yellow",
-    "bright_cyan",
-    "bright_magenta",
-    "bright_blue",
-    "bright_green",
-)
+# Provider colours are generated dynamically to avoid collisions with other
+# semantic colours used throughout the UI (for example, resolution tags). The
+# hue is derived from a hash of the provider name so that each provider is
+# always rendered with a unique, stable colour.
+PROVIDER_COLOR_SATURATION = 0.55
+PROVIDER_COLOR_LIGHTNESS = 0.5
 
 RESOLUTION_BUCKETS: tuple[tuple[int, str, str], ...] = (
     (2160, "2160p", "bright_magenta"),
@@ -252,7 +252,7 @@ class _ChannelListSummary(Static):
         self.entries = tuple(entries)
 
     def _refresh(self) -> None:
-        body = "\n".join(self.entries) if self.entries else self._empty_message
+        body = "\n\n".join(self.entries) if self.entries else self._empty_message
         self.update(f"[b]{self._title}[/]\n{body}")
 
 
@@ -413,6 +413,7 @@ class NowPlayingEntry:
     provider: str
     channel: Channel
     stats: Optional[StreamStats] = None
+    started_at: Optional[datetime] = None
 
     @property
     def bitrate_score(self) -> float:
@@ -424,19 +425,32 @@ class NowPlayingEntry:
 class NowPlayingListItem(ListItem):
     """Render a playing channel inside the management modal."""
 
-    def __init__(self, app: "StreamdeckApp", entry: NowPlayingEntry) -> None:
+    def __init__(
+        self, app: "StreamdeckApp", entry: NowPlayingEntry, *, selected: bool = False
+    ) -> None:
         self._app = app
         self.entry = entry
+        self._selected = selected
         self._label = Label("", markup=True)
         super().__init__(self._label)
+        self._refresh()
+
+    def set_selected(self, selected: bool) -> None:
+        if self._selected == selected:
+            return
+        self._selected = selected
         self._refresh()
 
     def _refresh(self) -> None:
         provider_markup = self._app._provider_markup(self.entry.provider)
         channel_name = escape(self.entry.channel.name)
-        lines = [f"{provider_markup} • {channel_name}"]
+        indicator = "☑" if self._selected else "☐"
+        lines = [f"{indicator} {provider_markup} • {channel_name}"]
         if self.entry.channel.group:
             lines.append(f"Group: {escape(self.entry.channel.group)}")
+        elapsed = self._app._format_playback_elapsed(self.entry.started_at)
+        if elapsed:
+            lines.append(f"Elapsed: {elapsed}")
         stats = self.entry.stats
         if stats is not None:
             lines.extend(self._app._format_stream_stats(stats))
@@ -451,6 +465,7 @@ class NowPlayingModal(ModalScreen[None]):
         self._app = app
         self._entries: list[NowPlayingEntry] = []
         self._sort_by_bitrate: bool = True
+        self._selected_keys: set[tuple[str, str]] = set()
 
     def compose(self) -> ComposeResult:
         yield Vertical(
@@ -489,6 +504,8 @@ class NowPlayingModal(ModalScreen[None]):
 
     def set_entries(self, entries: Sequence[NowPlayingEntry]) -> None:
         self._entries = list(entries)
+        active_keys = {entry.key for entry in self._entries}
+        self._selected_keys &= active_keys
         self._apply_sort()
         self._refresh_list()
         self._refresh_help()
@@ -518,7 +535,13 @@ class NowPlayingModal(ModalScreen[None]):
             self._update_controls()
             return
         for entry in self._entries:
-            list_view.append(NowPlayingListItem(self._app, entry))
+            list_view.append(
+                NowPlayingListItem(
+                    self._app,
+                    entry,
+                    selected=entry.key in self._selected_keys,
+                )
+            )
         if current_key is not None:
             for idx, entry in enumerate(self._entries):
                 if entry.key == current_key:
@@ -535,7 +558,8 @@ class NowPlayingModal(ModalScreen[None]):
             return
         if self._entries:
             help_text.update(
-                "Sort by bitrate to close the lowest quality streams manually."
+                "Sort by bitrate to close the lowest quality streams manually. "
+                "Press space to toggle channel selection."
             )
         else:
             help_text.update("No streams are currently playing.")
@@ -546,13 +570,14 @@ class NowPlayingModal(ModalScreen[None]):
         if list_view is not None:
             selected_index = getattr(list_view, "index", None)
         has_entries = bool(self._entries)
+        has_selection = bool(self._selected_keys)
         selected_valid = (
             selected_index is not None
             and 0 <= selected_index < len(self._entries)
         )
         for selector, enabled in (
             ("#now-playing-sort", has_entries),
-            ("#now-playing-stop", has_entries and selected_valid),
+            ("#now-playing-stop", has_entries and (selected_valid or has_selection)),
             ("#now-playing-stop-all", has_entries),
         ):
             try:
@@ -582,20 +607,42 @@ class NowPlayingModal(ModalScreen[None]):
 
     @on(Button.Pressed, "#now-playing-stop")
     def _on_stop_selected(self, _: Button.Pressed) -> None:  # pragma: no cover
-        entry = self._selected_entry()
-        if entry is None:
-            return
-        self._app._stop_channels([entry.key])
+        keys: list[tuple[str, str]]
+        if self._selected_keys:
+            keys = list(self._selected_keys)
+        else:
+            entry = self._selected_entry()
+            if entry is None:
+                return
+            keys = [entry.key]
+        self._app._stop_channels(keys)
+        for key in keys:
+            self._selected_keys.discard(key)
         self.set_entries(self._app._collect_now_playing_entries())
 
     @on(Button.Pressed, "#now-playing-stop-all")
     def _on_stop_all(self, _: Button.Pressed) -> None:  # pragma: no cover
         self._app.action_stop_all_playback()
+        self._selected_keys.clear()
         self.set_entries(self._app._collect_now_playing_entries())
 
     @on(Button.Pressed, "#now-playing-close")
     def _on_close(self, _: Button.Pressed) -> None:  # pragma: no cover
         self.dismiss(None)
+
+    def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
+        if event.key == "space":
+            entry = self._selected_entry()
+            if entry is not None:
+                if entry.key in self._selected_keys:
+                    self._selected_keys.remove(entry.key)
+                else:
+                    self._selected_keys.add(entry.key)
+                self._refresh_list()
+                self._update_controls()
+            event.stop()
+            return
+        super().on_key(event)
 
 
 class StatusBar(Static):
@@ -833,14 +880,14 @@ TabPane {
 }
 
 #channel-list {
-    width: 3fr;
-    min-width: 48;
+    width: 2fr;
+    min-width: 42;
 }
 
 #channel-sidebar {
     layout: vertical;
-    width: 1fr;
-    min-width: 32;
+    width: 3fr;
+    min-width: 36;
 }
 
 #channel-info,
@@ -855,7 +902,14 @@ TabPane {
 #playing-channels {
     border: heavy $surface;
     width: 1fr;
-    min-height: 5;
+    min-height: 8;
+    height: 1fr;
+    overflow-y: auto;
+}
+
+#channel-info,
+#selected-channels {
+    margin-bottom: 1;
 }
 
 #channel-actions {
@@ -959,9 +1013,14 @@ class StreamdeckApp(App[None]):
             tuple[str, str], StreamStatsAccumulator
         ] = {}
         self._latest_stats: dict[tuple[str, str], StreamStats] = {}
+        self._playback_started_at: dict[tuple[str, str], datetime] = {}
         self._now_playing_modal: Optional[NowPlayingModal] = None
         self._player_process: Optional[Process] = None
         self._worker: Optional[Worker] = None
+        self._provider_load_queue: deque[tuple[int, bool]] = deque()
+        self._playback_timer: Optional[Timer] = None
+        self._playback_timer_active: bool = False
+        self._current_provider_index: Optional[int] = None
         self._app_thread_id: int = threading.get_ident()
         self._log_viewer: Optional[LogViewer] = None
         self._status_bar: Optional[StatusBar] = None
@@ -1084,6 +1143,10 @@ class StreamdeckApp(App[None]):
         self._update_provider_form_visibility(self.provider_form_visible)
         self._refresh_selected_channels_panel()
         self._refresh_playing_channels_panel()
+        self._ensure_playback_timer()
+        self._update_playback_timer_state()
+        self._refresh_stale_providers()
+        self._update_provider_form_visibility(self.provider_form_visible)
 
     def _focus_provider_list(self) -> None:
         provider_list = self._query_optional_widget("#provider-list", ListView)
@@ -1229,12 +1292,16 @@ class StreamdeckApp(App[None]):
                 missing.append(key)
                 continue
             provider_markup = self._provider_markup(provider_name)
-            parts = [provider_markup, escape(channel.name)]
+            lines = [f"{provider_markup} • {escape(channel.name)}"]
             if channel.group:
-                parts.append(f"Group: {escape(channel.group)}")
+                lines.append(f"Group: {escape(channel.group)}")
             if key in self._playing_channels:
-                parts.append("[green]Playing[/]")
-            entries.append(" • ".join(parts))
+                elapsed = self._format_playback_elapsed(self._playback_started_at.get(key))
+                status = "[green]Playing[/]"
+                if elapsed:
+                    status = f"{status} ({elapsed})"
+                lines.append(status)
+            entries.append("\n".join(lines))
         if missing:
             self._queue_remove_many(missing)
             self._refresh_channel_queue_indicators()
@@ -1274,6 +1341,24 @@ class StreamdeckApp(App[None]):
             lines.append(bitrate_line)
         return lines
 
+    def _format_playback_elapsed(
+        self, started_at: Optional[datetime]
+    ) -> Optional[str]:
+        if started_at is None:
+            return None
+        now = datetime.now(tz=timezone.utc)
+        if started_at > now:
+            return None
+        elapsed = now - started_at
+        total_seconds = int(elapsed.total_seconds())
+        if total_seconds < 0:
+            total_seconds = 0
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes}:{seconds:02d}"
+
     def _refresh_playing_channels_panel(self) -> None:
         panel = self._query_optional_widget(PlayingChannelsPanel)
         if panel is None:
@@ -1281,17 +1366,43 @@ class StreamdeckApp(App[None]):
         entries: list[str] = []
         for key, (provider_name, channel) in self._playing_channels.items():
             provider_markup = self._provider_markup(provider_name)
-            parts = [provider_markup, escape(channel.name)]
+            lines = [f"{provider_markup} • {escape(channel.name)}"]
             if channel.group:
-                parts.append(f"Group: {escape(channel.group)}")
+                lines.append(f"Group: {escape(channel.group)}")
+            elapsed = self._format_playback_elapsed(self._playback_started_at.get(key))
+            if elapsed:
+                lines.append(f"Elapsed: {elapsed}")
             stats = self._latest_stats.get(key)
             if stats is not None:
-                parts.extend(self._format_stream_stats(stats))
-            entries.append(" • ".join(parts))
+                lines.extend(self._format_stream_stats(stats))
+            entries.append("\n".join(lines))
         panel.update_entries(entries)
         self._set_stop_buttons_enabled(bool(self._playing_channels))
         self._update_now_playing_modal_entries()
         self._refresh_selected_channels_panel()
+
+    def _ensure_playback_timer(self) -> None:
+        if self._playback_timer is None:
+            self._playback_timer = self.set_interval(
+                1.0, self._on_playback_timer_tick, pause=True
+            )
+            self._playback_timer_active = False
+
+    def _on_playback_timer_tick(self) -> None:
+        if self._playing_channels:
+            self._refresh_playing_channels_panel()
+
+    def _update_playback_timer_state(self) -> None:
+        self._ensure_playback_timer()
+        timer = self._playback_timer
+        if timer is None:
+            return
+        if self._playing_channels and not self._playback_timer_active:
+            timer.resume()
+            self._playback_timer_active = True
+        elif not self._playing_channels and self._playback_timer_active:
+            timer.pause()
+            self._playback_timer_active = False
 
     def _stats_accumulator_for_key(
         self, key: tuple[str, str]
@@ -1313,6 +1424,7 @@ class StreamdeckApp(App[None]):
     def _remove_playing_entry(self, key: tuple[str, str]) -> None:
         self._playing_channels.pop(key, None)
         self._clear_playing_stats(key)
+        self._playback_started_at.pop(key, None)
 
     def _handle_bitrate_update(self, key: tuple[str, str], value: float) -> None:
         accumulator = self._stats_accumulator_for_key(key)
@@ -1378,6 +1490,7 @@ class StreamdeckApp(App[None]):
 
         self._playing_channels.clear()
         self._clear_playing_stats()
+        self._playback_started_at.clear()
         self._refresh_playing_channels_panel()
         self._player_process = None
 
@@ -1425,6 +1538,7 @@ class StreamdeckApp(App[None]):
                     provider=provider_name,
                     channel=channel,
                     stats=self._latest_stats.get(key),
+                    started_at=self._playback_started_at.get(key),
                 )
             )
         return entries
@@ -1439,12 +1553,20 @@ class StreamdeckApp(App[None]):
         if self._now_playing_modal is modal:
             self._now_playing_modal = None
 
+    @staticmethod
+    def _generate_provider_color(provider: str) -> str:
+        digest = hashlib.sha1(provider.encode("utf8")).digest()
+        hue = int.from_bytes(digest[:2], "big") / 65535.0
+        red, green, blue = colorsys.hls_to_rgb(
+            hue, PROVIDER_COLOR_LIGHTNESS, PROVIDER_COLOR_SATURATION
+        )
+        return f"#{int(red * 255):02x}{int(green * 255):02x}{int(blue * 255):02x}"
+
     def _provider_color(self, provider: Optional[str]) -> Optional[str]:
         if provider is None:
             return None
         if provider not in self._provider_colors:
-            index = len(self._provider_colors) % len(PROVIDER_COLOR_CYCLE)
-            self._provider_colors[provider] = PROVIDER_COLOR_CYCLE[index]
+            self._provider_colors[provider] = self._generate_provider_color(provider)
         return self._provider_colors[provider]
 
     def _provider_markup(self, provider: str) -> str:
@@ -1487,6 +1609,7 @@ class StreamdeckApp(App[None]):
             return
         self._remove_playing_entry(key)
         handle = self._player_handles.pop(key, None)
+        self._update_playback_timer_state()
         if handle is None:
             return
         for path in handle.command.cleanup_paths:
@@ -1788,12 +1911,14 @@ class StreamdeckApp(App[None]):
     ) -> None:
         self._player_handles[key] = handle
         self._playing_channels[key] = (provider_name, channel)
+        self._playback_started_at[key] = datetime.now(tz=timezone.utc)
         self._clear_playing_stats(key)
         self._refresh_playing_channels_panel()
         self._player_process = handle.process
         self._set_status(f"Playing {channel.name} from {provider_name}")
         log.info("Player launched for %s (%s)", channel.name, provider_name)
         self._start_player_monitor(key, handle)
+        self._update_playback_timer_state()
 
     def _handle_player_exit(
         self,
@@ -2289,6 +2414,63 @@ class StreamdeckApp(App[None]):
         if self._worker and not self._worker.is_finished:
             self._worker.cancel()
         self._worker = None
+        self._current_provider_index = None
+
+    def _queue_provider_load(self, index: int, *, force: bool = False) -> None:
+        if not (0 <= index < len(self._states)):
+            return
+        state = self._states[index]
+        if state.loading:
+            return
+        queue = deque(
+            (existing_index, existing_force)
+            for existing_index, existing_force in self._provider_load_queue
+            if existing_index != index
+        )
+        queue.append((index, force))
+        self._provider_load_queue = queue
+        self._process_provider_queue()
+
+    def _remove_provider_from_queue(self, removed_index: int) -> None:
+        queue: deque[tuple[int, bool]] = deque()
+        for index, force in self._provider_load_queue:
+            if index == removed_index:
+                continue
+            if index > removed_index:
+                queue.append((index - 1, force))
+            else:
+                queue.append((index, force))
+        self._provider_load_queue = queue
+
+    def _process_provider_queue(self) -> None:
+        if self._worker and not self._worker.is_finished:
+            return
+        while self._provider_load_queue:
+            index, force = self._provider_load_queue.popleft()
+            if not (0 <= index < len(self._states)):
+                continue
+            started = self._load_provider(index, force=force)
+            if started:
+                break
+
+    def _refresh_stale_providers(self) -> None:
+        if not self._states:
+            return
+        now = datetime.now(tz=timezone.utc)
+        ordered_indexes = list(range(len(self._states)))
+        if self._active_index is not None and 0 <= self._active_index < len(self._states):
+            ordered_indexes.remove(self._active_index)
+            ordered_indexes.insert(0, self._active_index)
+        for index in ordered_indexes:
+            state = self._states[index]
+            if state.loading:
+                continue
+            if state.channels is None:
+                self._queue_provider_load(index)
+                continue
+            last_loaded = state.last_loaded_at
+            if last_loaded is not None and now - last_loaded >= RECENT_RELOAD_THRESHOLD:
+                self._queue_provider_load(index)
 
     def _call_on_app_thread(self, callback: Callable[..., None], *args) -> None:
         if threading.get_ident() == self._app_thread_id:
@@ -2298,11 +2480,20 @@ class StreamdeckApp(App[None]):
 
     def _worker_finished(self) -> None:
         self._worker = None
+        self._current_provider_index = None
+        self._process_provider_queue()
 
 
-    def _load_provider(self, index: int, *, force: bool = False) -> None:
+    def _load_provider(self, index: int, *, force: bool = False) -> bool:
         state = self._states[index]
-        if not force and state.last_loaded_at is not None:
+        if state.loading:
+            log.info("Provider %s is already loading", state.config.name)
+            return False
+        if (
+            not force
+            and state.channels is not None
+            and state.last_loaded_at is not None
+        ):
             now = datetime.now(tz=timezone.utc)
             elapsed = now - state.last_loaded_at
             if elapsed < RECENT_RELOAD_THRESHOLD:
@@ -2317,7 +2508,12 @@ class StreamdeckApp(App[None]):
                     state.config.name,
                     elapsed_label,
                 )
-                return
+                return False
+        if (
+            self._current_provider_index is not None
+            and self._current_provider_index != index
+        ):
+            self._queue_provider_load(self._current_provider_index)
         self._stop_worker()
         state.loading = True
         state.last_error = None
@@ -2340,7 +2536,9 @@ class StreamdeckApp(App[None]):
         self._set_status(f"Loading channels for {state.config.name}…")
         self._update_provider_progress_widget(state)
         self._update_connection_usage_widget(state)
+        self._current_provider_index = index
         self._worker = self.run_worker(self._fetch_provider(state), name=f"provider:{state.config.name}")
+        return True
 
     async def _fetch_provider(self, state: ProviderState) -> None:
         log.debug("Worker started for provider %s", state.config.name)
@@ -2788,6 +2986,7 @@ class StreamdeckApp(App[None]):
             self._set_status("No provider selected")
             return
         state = self._states.pop(self._active_index)
+        self._remove_provider_from_queue(self._active_index)
         removed_keys = [
             key for key in self._queued_channels if key[0] == state.config.name
         ]
