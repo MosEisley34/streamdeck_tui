@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +49,86 @@ class Channel:
         """Return True if the channel matches the search query."""
 
         return self.matches_tokens(normalize_tokens(query))
+
+
+class ChannelSearchIndex:
+    """High-performance search index for large channel collections."""
+
+    __slots__ = ("_conn", "_size")
+
+    def __init__(self, connection: Optional[sqlite3.Connection], size: int) -> None:
+        self._conn = connection
+        self._size = size
+
+    @classmethod
+    def build(cls, channels: Sequence[Channel]) -> "ChannelSearchIndex":
+        """Build an indexed search structure for *channels*."""
+
+        total = len(channels)
+        if total == 0:
+            return cls(None, 0)
+
+        connection = sqlite3.connect(":memory:", check_same_thread=False)
+        connection.execute("PRAGMA journal_mode=OFF")
+        connection.execute("PRAGMA synchronous=OFF")
+        connection.execute("PRAGMA temp_store=MEMORY")
+        connection.execute("PRAGMA cache_size=-64000")
+        connection.execute("PRAGMA locking_mode=EXCLUSIVE")
+        connection.execute(
+            """
+            CREATE TABLE token_index (
+                token TEXT NOT NULL,
+                channel INTEGER NOT NULL,
+                PRIMARY KEY (token, channel)
+            ) WITHOUT ROWID
+            """
+        )
+
+        connection.execute("BEGIN IMMEDIATE")
+        batch: list[tuple[str, int]] = []
+        batch_size = 50_000
+        for index, channel in enumerate(channels):
+            for token in channel._tokens:
+                batch.append((token, index))
+            if len(batch) >= batch_size:
+                connection.executemany(
+                    "INSERT OR IGNORE INTO token_index(token, channel) VALUES (?, ?)",
+                    batch,
+                )
+                batch.clear()
+        if batch:
+            connection.executemany(
+                "INSERT OR IGNORE INTO token_index(token, channel) VALUES (?, ?)",
+                batch,
+            )
+        connection.commit()
+        connection.execute("PRAGMA optimize")
+        return cls(connection, total)
+
+    def lookup(self, tokens: Sequence[str]) -> list[int]:
+        """Return candidate channel indices that match *tokens*."""
+
+        if not tokens:
+            return list(range(self._size))
+        if self._conn is None:
+            return []
+        placeholders = ",".join("?" for _ in tokens)
+        query = (
+            "SELECT channel FROM token_index WHERE token IN ("
+            f"{placeholders}) GROUP BY channel HAVING COUNT(*) = ? ORDER BY channel"
+        )
+        cursor = self._conn.execute(query, (*tokens, len(tokens)))
+        return [row[0] for row in cursor]
+
+    def close(self) -> None:
+        """Release resources held by the search index."""
+
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def __len__(self) -> int:
+        return self._size
 
 
 class PlaylistError(RuntimeError):
@@ -142,14 +223,10 @@ def normalize_tokens(text: str) -> list[str]:
     return tokens
 
 
-def build_search_index(channels: Sequence[Channel]) -> dict[str, set[int]]:
-    """Construct an inverted index mapping tokens to channel positions."""
+def build_search_index(channels: Sequence[Channel]) -> ChannelSearchIndex:
+    """Construct a high-performance search index for ``channels``."""
 
-    index: dict[str, set[int]] = {}
-    for idx, channel in enumerate(channels):
-        for token in channel._tokens:
-            index.setdefault(token, set()).add(idx)
-    return index
+    return ChannelSearchIndex.build(channels)
 
 
 def parse_playlist(lines: Iterable[str]) -> List[Channel]:
@@ -277,7 +354,7 @@ def filter_channels(
 def filter_channels(
     channels: Sequence[Channel],
     query: str,
-    search_index: Optional[Mapping[str, set[int]]] = None,
+    search_index: Optional[Mapping[str, set[int]] | ChannelSearchIndex] = None,
     *,
     return_indices: bool = False,
 ) -> List[Channel] | List[int]:
@@ -289,24 +366,42 @@ def filter_channels(
         log.debug("Filter query empty; returning %d channels", len(results))
         return results
 
-    candidate_ids: Optional[set[int]] = None
+    candidate_ids: Optional[Sequence[int] | set[int]] = None
+    candidate_lookup: Optional[set[int]] = None
     if search_index is not None:
-        for token in tokens:
-            postings = search_index.get(token)
-            if not postings:
-                candidate_ids = set()
-                break
+        if isinstance(search_index, ChannelSearchIndex):
+            candidate_list = search_index.lookup(tokens)
+            candidate_ids = candidate_list
+            candidate_lookup = set(candidate_list)
+        else:
+            for token in tokens:
+                postings = search_index.get(token)
+                if not postings:
+                    candidate_lookup = set()
+                    candidate_ids = []
+                    break
+                if candidate_lookup is None:
+                    candidate_lookup = set(postings)
+                else:
+                    candidate_lookup &= postings
+                if not candidate_lookup:
+                    break
             if candidate_ids is None:
-                candidate_ids = set(postings)
-            else:
-                candidate_ids &= postings
-            if not candidate_ids:
-                break
+                candidate_ids = sorted(candidate_lookup) if candidate_lookup is not None else None
 
     channel_results: List[Channel] = []
     index_results: List[int] = []
-    for idx, channel in enumerate(channels):
-        if candidate_ids is not None and idx not in candidate_ids:
+    if candidate_ids is not None:
+        iterator = (
+            (idx, channels[idx])
+            for idx in candidate_ids
+            if 0 <= idx < len(channels)
+        )
+    else:
+        iterator = enumerate(channels)
+        candidate_lookup = None
+    for idx, channel in iterator:
+        if candidate_lookup is not None and idx not in candidate_lookup:
             continue
         if channel.matches_tokens(tokens):
             if return_indices:
@@ -321,6 +416,7 @@ def filter_channels(
 
 __all__ = [
     "Channel",
+    "ChannelSearchIndex",
     "PlaylistError",
     "parse_playlist",
     "load_playlist",
