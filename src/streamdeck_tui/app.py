@@ -1029,7 +1029,7 @@ TabPane {
 }
 
 #providers-pane {
-    min-width: 30;
+    min-width: 24;
 }
 
 #provider-actions {
@@ -1061,14 +1061,14 @@ TabPane {
 }
 
 #channel-list {
-    width: 2fr;
-    min-width: 42;
+    width: 3fr;
+    min-width: 26;
 }
 
 #channel-sidebar {
     layout: vertical;
-    width: 3fr;
-    min-width: 36;
+    width: 2fr;
+    min-width: 22;
 }
 
 #channel-info,
