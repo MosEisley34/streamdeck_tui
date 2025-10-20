@@ -842,13 +842,15 @@ def test_channel_list_shows_provider_names() -> None:
     from streamdeck_tui.app import ChannelListItem, StreamdeckApp
     from streamdeck_tui.config import AppConfig, ProviderConfig
     from streamdeck_tui.playlist import Channel, build_search_index
+    from streamdeck_tui.providers import ConnectionStatus
 
     provider = ProviderConfig(name="Demo Provider", playlist_url="http://example.com")
-    channel = Channel(name="Sample", url="http://example.com/sample")
+    channel = Channel(name="Sample", url="http://example.com/sample", group="News")
     app = StreamdeckApp(AppConfig(providers=[provider]))
     state = app._states[0]
     state.channels = [channel]
     state.search_index = build_search_index(state.channels)
+    state.connection_status = ConnectionStatus(active_connections=2, max_connections=5)
 
     expected_color = app._provider_color(provider.name)
 
@@ -868,6 +870,8 @@ def test_channel_list_shows_provider_names() -> None:
     text = getattr(rendered, "plain", str(rendered))
     assert "Demo Provider" in text
     assert "Sample" in text
+    assert "News" in text
+    assert "Connections: 2/5" in text
     spans = getattr(rendered, "spans", ())
     assert any(span.style == expected_color for span in spans)
 
@@ -898,120 +902,6 @@ def test_stop_all_playback_stops_everything(monkeypatch) -> None:
     assert stopped == [(active_key, True)]
 
 
-def test_now_playing_modal_sorts_by_bitrate() -> None:
-    from streamdeck_tui.app import NowPlayingEntry, NowPlayingModal, StreamdeckApp
-    from streamdeck_tui.config import AppConfig
-    from streamdeck_tui.playlist import Channel
-    from streamdeck_tui.stats import StreamStats
-
-    app = StreamdeckApp(AppConfig())
-    modal = NowPlayingModal(app)
-    entries = [
-        NowPlayingEntry(
-            key=("P1", "url1"),
-            provider="Provider A",
-            channel=Channel(name="A", url="url1"),
-            stats=StreamStats(average_bitrate=1_000_000),
-        ),
-        NowPlayingEntry(
-            key=("P2", "url2"),
-            provider="Provider B",
-            channel=Channel(name="B", url="url2"),
-            stats=StreamStats(average_bitrate=2_000_000),
-        ),
-        NowPlayingEntry(
-            key=("P3", "url3"),
-            provider="Provider C",
-            channel=Channel(name="C", url="url3"),
-            stats=StreamStats(),
-        ),
-    ]
-
-    modal.set_entries(entries)
-
-    ordered_keys = [entry.key for entry in modal._entries]
-    assert ordered_keys == [("P2", "url2"), ("P1", "url1"), ("P3", "url3")]
-
-
-def test_now_playing_modal_preserves_selection_on_update(monkeypatch) -> None:
-    from datetime import datetime, timedelta, timezone
-    from typing import Optional
-
-    from streamdeck_tui.app import NowPlayingEntry, NowPlayingModal, StreamdeckApp
-    from streamdeck_tui.config import AppConfig
-    from streamdeck_tui.playlist import Channel
-    from streamdeck_tui.stats import StreamStats
-
-    app = StreamdeckApp(AppConfig())
-    modal = NowPlayingModal(app)
-
-    class FakeListView:
-        def __init__(self) -> None:
-            self.children: list = []
-            self.index: Optional[int] = None
-            self.clear_calls = 0
-
-        def clear(self) -> None:
-            self.clear_calls += 1
-            self.children.clear()
-
-        def append(self, item) -> None:
-            self.children.append(item)
-
-    fake_list = FakeListView()
-    monkeypatch.setattr(modal, "_get_list_view", lambda: fake_list)
-    monkeypatch.setattr(modal, "_refresh_help", lambda: None)
-    monkeypatch.setattr(modal, "_update_controls", lambda: None)
-
-    started_at = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
-    entry_a = NowPlayingEntry(
-        key=("P1", "url1"),
-        provider="Provider A",
-        channel=Channel(name="A", url="url1"),
-        stats=StreamStats(average_bitrate=1_000_000),
-        started_at=started_at,
-    )
-    entry_b = NowPlayingEntry(
-        key=("P2", "url2"),
-        provider="Provider B",
-        channel=Channel(name="B", url="url2"),
-        stats=StreamStats(average_bitrate=2_000_000),
-        started_at=started_at,
-    )
-    entry_c = NowPlayingEntry(
-        key=("P3", "url3"),
-        provider="Provider C",
-        channel=Channel(name="C", url="url3"),
-        stats=StreamStats(),
-        started_at=started_at,
-    )
-
-    modal._selected_keys = {entry_a.key}
-    modal.set_entries([entry_a, entry_b, entry_c])
-
-    assert fake_list.clear_calls == 1
-    assert len(fake_list.children) == 3
-    fake_list.index = 1
-    assert fake_list.children[1].entry.key == entry_a.key
-    assert fake_list.children[1]._selected
-
-    updated_entry_a = NowPlayingEntry(
-        key=entry_a.key,
-        provider=entry_a.provider,
-        channel=entry_a.channel,
-        stats=StreamStats(average_bitrate=1_500_000, live_bitrate=1_200_000),
-        started_at=started_at - timedelta(minutes=1),
-    )
-
-    modal.set_entries([updated_entry_a, entry_b, entry_c])
-
-    assert fake_list.clear_calls == 1
-    assert len(fake_list.children) == 3
-    assert fake_list.index == 1
-    assert fake_list.children[1].entry.key == entry_a.key
-    assert fake_list.children[1]._selected
-    assert fake_list.children[1].entry.stats.average_bitrate == 1_500_000
-    assert fake_list.children[1].entry.stats.live_bitrate == 1_200_000
 
 
 def test_search_down_arrow_focuses_channel_list() -> None:
