@@ -19,11 +19,6 @@ TabPane {
     min-width: 24;
 }
 
-#provider-actions {
-    layout: horizontal;
-    padding-top: 1;
-}
-
 #provider-progress {
     border: heavy $surface;
     padding: 0 1;
@@ -112,10 +107,6 @@ TabPane {
     margin-bottom: 1;
 }
 
-#channel-actions {
-    layout: horizontal;
-}
-
 #now-playing-list {
     height: 1fr;
     overflow-y: auto;
@@ -125,19 +116,15 @@ TabPane {
     height: 1fr;
 }
 
-#now-playing-actions {
-    layout: horizontal;
-    margin-top: 1;
-}
-
-#now-playing-actions Button {
-    width: 1fr;
-}
-
 #log-viewer {
     border: heavy $surface;
     padding: 0 1;
     overflow-y: auto;
+}
+
+#channel-actions-help {
+    padding: 1;
+    color: $text-muted;
 }
 
 StatusBar {
