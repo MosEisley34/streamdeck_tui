@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sys
-from collections import deque
+from collections import defaultdict, deque
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -23,7 +23,8 @@ import threading
 from asyncio.subprocess import Process
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterable, List, Optional, Sequence
+from itertools import groupby
+from typing import Any, Callable, Iterable, List, Optional, Sequence, cast
 
 try:
     from textual import events, on
@@ -47,6 +48,7 @@ try:
         TabPane,
         TabbedContent,
     )
+    from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
     from textual.widgets._tabbed_content import ContentTabs
 except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
     raise ModuleNotFoundError(
@@ -98,6 +100,24 @@ RESOLUTION_BUCKETS: tuple[tuple[int, str, str], ...] = (
     (480, "480p", "orange1"),
     (360, "360p", "red"),
 )
+
+_TAB_SCOPES: dict[str, frozenset[str]] = {}
+
+
+def tab_binding(
+    key: str,
+    action: str,
+    description: str,
+    *,
+    tabs: Iterable[str],
+    show: bool = False,
+    **kwargs: Any,
+) -> Binding:
+    """Create a binding associated with one or more tabs."""
+
+    binding = Binding(key, action, description, show=show, **kwargs)
+    _TAB_SCOPES[binding.action] = frozenset(tabs)
+    return binding
 
 
 def _format_timedelta(delta: timedelta) -> str:
@@ -674,6 +694,100 @@ class StatusBar(Static):
         self.update(status)
 
 
+class TabAwareFooter(Footer):
+    """Footer that only exposes bindings relevant to the active tab."""
+
+    compact = reactive(False, toggle_class="-compact")
+    show_command_palette = reactive(True)
+    combine_groups = reactive(True)
+
+    def compose(self) -> ComposeResult:  # pragma: no cover - exercised via tests
+        if not self._bindings_ready:
+            return
+        if not hasattr(self.app, "_binding_visible_in_tab"):
+            yield from super().compose()
+            return
+        app = cast("StreamdeckApp", self.app)
+        active_tab = getattr(app, "_active_tab", None)
+        active_bindings = self.screen.active_bindings
+        bindings = []
+        for _, binding, enabled, tooltip in active_bindings.values():
+            if app._binding_visible_in_tab(binding, active_tab):
+                bindings.append((binding, enabled, tooltip))
+        if not bindings:
+            return
+        action_to_bindings: defaultdict[str, list[tuple[Binding, bool, str]]]
+        action_to_bindings = defaultdict(list)
+        for binding, enabled, tooltip in bindings:
+            action_to_bindings[binding.action].append((binding, enabled, tooltip))
+
+        self.styles.grid_size_columns = len(action_to_bindings)
+
+        for group, grouped_iterable in groupby(
+            action_to_bindings.values(),
+            lambda multi: multi[0][0].group,
+        ):
+            grouped = list(grouped_iterable)
+            if group is not None and len(grouped) > 1:
+                with KeyGroup(classes="-compact" if group.compact else ""):
+                    for multi_bindings in grouped:
+                        binding, enabled, tooltip = multi_bindings[0]
+                        key_widget = FooterKey(
+                            binding.key,
+                            self.app.get_key_display(binding),
+                            "",
+                            binding.action,
+                            disabled=not enabled,
+                            tooltip=tooltip or binding.description,
+                            classes="-grouped",
+                        )
+                        key_widget.compact = self.compact
+                        yield key_widget
+                yield FooterLabel(group.description)
+            else:
+                for multi_bindings in grouped:
+                    binding, enabled, tooltip = multi_bindings[0]
+                    key_widget = FooterKey(
+                        binding.key,
+                        self.app.get_key_display(binding),
+                        binding.description,
+                        binding.action,
+                        disabled=not enabled,
+                        tooltip=tooltip,
+                    )
+                    key_widget.compact = self.compact
+                    yield key_widget
+
+        if self.show_command_palette and self.app.ENABLE_COMMAND_PALETTE:
+            try:
+                _node, binding, enabled, tooltip = active_bindings[
+                    self.app.COMMAND_PALETTE_BINDING
+                ]
+            except KeyError:
+                pass
+            else:
+                if app._binding_visible_in_tab(binding, active_tab):
+                    key_widget = FooterKey(
+                        binding.key,
+                        self.app.get_key_display(binding),
+                        binding.description,
+                        binding.action,
+                        classes="-command-palette",
+                        disabled=not enabled,
+                        tooltip=binding.tooltip or binding.description,
+                    )
+                    key_widget.compact = self.compact
+                    yield key_widget
+
+    def watch_compact(self, compact: bool) -> None:
+        if self.is_attached:
+            self.call_after_refresh(self.recompose)
+
+    def refresh_for_active_tab(self) -> None:
+        if self.is_attached:
+            self.call_after_refresh(self.recompose)
+
+
 class ProviderProgress(Static):
     """Visual progress indicator for provider loading."""
 
@@ -985,22 +1099,55 @@ class StreamdeckApp(App[None]):
         Binding("f2", "switch_tab('channels')", "Channels"),
         Binding("f3", "switch_tab('favorites')", "Favorites"),
         Binding("f4", "switch_tab('logs')", "Logs"),
-        Binding("/", "focus_search", "Search"),
-        Binding("escape", "clear_search", "Clear search"),
-        Binding("n", "new_provider", "New provider"),
-        Binding("ctrl+s", "save_provider", "Save provider"),
-        Binding("delete", "delete_provider", "Delete provider"),
-        Binding("r", "reload_provider", "Reload provider"),
-        Binding("p", "play_channel", "Play"),
-        Binding("space", "toggle_channel_queue", "Queue channel"),
-        Binding("s", "stop_channel", "Stop selected"),
+        tab_binding("/", "focus_search", "Search", tabs={"channels"}),
+        tab_binding("escape", "clear_search", "Clear search", tabs={"channels"}),
+        tab_binding("n", "new_provider", "New provider", tabs={"providers"}),
+        tab_binding("ctrl+s", "save_provider", "Save provider", tabs={"providers"}),
+        tab_binding("delete", "delete_provider", "Delete provider", tabs={"providers"}),
+        tab_binding("r", "reload_provider", "Reload provider", tabs={"providers"}),
+        tab_binding("p", "play_channel", "Play", tabs={"channels", "favorites"}),
+        tab_binding(
+            "space",
+            "toggle_channel_queue",
+            "Queue channel",
+            tabs={"channels"},
+        ),
+        tab_binding(
+            "s",
+            "stop_channel",
+            "Stop selected",
+            tabs={"channels", "favorites"},
+        ),
         Binding("ctrl+shift+s", "stop_all_playback", "Stop all"),
-        Binding("f", "toggle_favorite", "Favorite"),
+        tab_binding(
+            "f",
+            "toggle_favorite",
+            "Favorite",
+            tabs={"channels", "favorites"},
+        ),
         Binding("ctrl+shift+p", "probe_player", "Probe player"),
         Binding("m", "show_now_playing", "Manage playback"),
         Binding("down", "focus_active_tab_content", show=False, priority=True),
     ]
     _PROVIDERS_TAB_REQUIRED_STATUS = "Switch to the Providers tab to manage providers"
+    Footer = TabAwareFooter
+
+    @staticmethod
+    def _binding_tab_scope(binding: Binding) -> Optional[frozenset[str]]:
+        return _TAB_SCOPES.get(binding.action)
+
+    def _binding_visible_in_tab(
+        self, binding: Binding, tab: Optional[str]
+    ) -> bool:
+        scope = self._binding_tab_scope(binding)
+        if scope:
+            return tab in scope if tab is not None else False
+        return binding.show
+
+    def _refresh_footer_bindings(self) -> None:
+        footer = self._query_optional_widget("#app-footer", TabAwareFooter)
+        if footer is not None:
+            footer.refresh_for_active_tab()
 
     def _register_custom_themes(self) -> None:
         for theme in CUSTOM_THEMES.values():
@@ -1159,7 +1306,7 @@ class StreamdeckApp(App[None]):
                 with Vertical(id="logs-pane"):
                     yield LogViewer(id="log-viewer")
         yield StatusBar(id="status")
-        yield Footer()
+        yield TabAwareFooter(id="app-footer")
 
     def on_mount(self) -> None:
         log.debug("Application mounted")
@@ -1192,6 +1339,7 @@ class StreamdeckApp(App[None]):
         self._update_playback_timer_state()
         self._refresh_stale_providers()
         self._update_provider_form_visibility(self.provider_form_visible)
+        self._refresh_footer_bindings()
 
     def _focus_provider_list(self) -> None:
         provider_list = self._query_optional_widget("#provider-list", ListView)
@@ -1832,6 +1980,7 @@ class StreamdeckApp(App[None]):
         if self._active_tab == tab:
             if focus:
                 self._focus_tab_content(tab)
+            self._refresh_footer_bindings()
             return
         self._active_tab = tab
         if tab != "channels":
@@ -1847,6 +1996,7 @@ class StreamdeckApp(App[None]):
             self._refresh_favorites_view()
         if focus:
             self._focus_tab_content(tab)
+        self._refresh_footer_bindings()
 
     def _get_selected_entry(
         self,
@@ -3289,3 +3439,5 @@ class StreamdeckApp(App[None]):
 
 
 __all__ = ["StreamdeckApp"]
+
+StreamdeckApp.TabAwareFooter = TabAwareFooter  # type: ignore[attr-defined]

@@ -964,3 +964,50 @@ def test_search_down_arrow_focuses_channel_list() -> None:
 
     has_focus = asyncio.run(run_app())
     assert has_focus
+
+
+def test_tab_specific_bindings_expose_scope_metadata() -> None:
+    """Bindings restricted to tabs should report their scope and stay hidden by default."""
+
+    from streamdeck_tui.app import StreamdeckApp
+
+    binding = next(b for b in StreamdeckApp.BINDINGS if b.action == "new_provider")
+
+    assert not binding.show
+    assert StreamdeckApp._binding_tab_scope(binding) == frozenset({"providers"})
+
+
+def test_footer_updates_with_active_tab_bindings() -> None:
+    """Switching tabs should refresh the footer with the relevant shortcuts."""
+
+    from textual.widgets._footer import FooterKey
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+
+    provider = ProviderConfig(name="Test", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+    app._states[0].channels = []
+
+    async def run_app() -> None:
+        async with app.run_test() as pilot:
+            footer = app.query_one("#app-footer")
+
+            await pilot.pause()
+
+            app.action_switch_tab("channels")
+            await pilot.pause()
+
+            def footer_actions() -> set[str]:
+                return {widget.action for widget in footer.query(FooterKey)}
+
+            assert "focus_search" in footer_actions()
+            assert "new_provider" not in footer_actions()
+
+            app.action_switch_tab("providers")
+            await pilot.pause()
+
+            assert "new_provider" in footer_actions()
+            assert "focus_search" not in footer_actions()
+
+    asyncio.run(run_app())
