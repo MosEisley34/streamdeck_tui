@@ -522,8 +522,19 @@ class PlayingChannelsPanel(Vertical):
     ) -> None:  # pragma: no cover - UI callback
         if self._list_view is None or event.list_view is not self._list_view:
             return
-        self._selected_index = event.index
-        self._update_selection_indicator(event.index)
+        index = getattr(event, "index", None)
+        if index is None:
+            list_view = event.list_view
+            index = getattr(list_view, "index", None)
+            if index is None:
+                item = getattr(event, "item", None)
+                if item is not None:
+                    for idx, child in enumerate(list_view.children):
+                        if child is item:
+                            index = idx
+                            break
+        self._selected_index = index
+        self._update_selection_indicator(index)
 
     def _update_selection_indicator(self, selected_index: Optional[int]) -> None:
         if self._list_view is None:
