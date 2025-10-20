@@ -282,6 +282,12 @@ class SearchInput(Input):
             result = handler(event)
             if inspect.isawaitable(result):
                 await result
+            return
+        handler = getattr(super(), "_on_key", None)
+        if callable(handler):
+            result = handler(event)
+            if inspect.isawaitable(result):
+                await result
 
 
 class ChannelListView(ListView):
@@ -292,14 +298,14 @@ class ChannelListView(ListView):
         if isinstance(app, StreamdeckApp):
             app._mark_channel_list_ready()
 
-    def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
+    async def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
         if event.key == "right":
             app = getattr(self, "app", None)
             if isinstance(app, StreamdeckApp):
                 event.stop()
                 app.call_after_refresh(app._focus_playing_list)
                 return
-        super().on_key(event)
+        await super()._on_key(event)
 
 
 class FavoriteListItem(ListItem):
@@ -416,14 +422,14 @@ class PlayingChannelListItem(ListItem):
 class PlayingChannelListView(ListView):
     """List view showing playing channels with keyboard navigation helpers."""
 
-    def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
+    async def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
         if event.key == "left":
             app = getattr(self, "app", None)
             if isinstance(app, StreamdeckApp):
                 event.stop()
                 app.call_after_refresh(app._focus_channel_list)
                 return
-        super().on_key(event)
+        await super()._on_key(event)
 
 
 class PlayingChannelsPanel(Vertical):
@@ -942,7 +948,7 @@ class ReloadConfirmation(ModalScreen[bool]):
                 id="reload-confirmation-message",
             )
 
-    def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
+    async def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
         if event.key in {"y", "enter"}:
             self.dismiss(True)
             event.stop()
@@ -951,7 +957,7 @@ class ReloadConfirmation(ModalScreen[bool]):
             self.dismiss(False)
             event.stop()
             return
-        super().on_key(event)
+        await super()._on_key(event)
 
 
 # We keep a very small inline stylesheet so the application can always boot
