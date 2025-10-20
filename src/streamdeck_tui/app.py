@@ -564,6 +564,7 @@ class NowPlayingModal(ModalScreen[None]):
                 Button("Close", id="now-playing-close", variant="primary"),
                 id="now-playing-actions",
             ),
+            expand=True,
         )
 
     def on_mount(self) -> None:  # pragma: no cover - UI callback
@@ -1102,6 +1103,11 @@ TabPane {
 
 #playing-actions Button {
     width: 1fr;
+}
+
+#now-playing-list {
+    height: 1fr;
+    overflow-y: auto;
 }
 
 #now-playing-actions {
