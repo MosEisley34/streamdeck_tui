@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -19,6 +20,7 @@ class ProviderConfig:
     name: str
     playlist_url: str
     api_url: Optional[str] = None
+    last_loaded_at: Optional[str] = None
 
 
 @dataclass(slots=True)
@@ -160,6 +162,8 @@ def _dump_config(data: AppConfig) -> str:
             lines.append("    playlist_url: " + provider.playlist_url)
             if provider.api_url:
                 lines.append("    api_url: " + provider.api_url)
+            if provider.last_loaded_at:
+                lines.append("    last_loaded_at: " + provider.last_loaded_at)
     else:
         lines.append("providers: []")
     if data.favorites:
@@ -200,11 +204,25 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         if not name or not playlist:
             log.warning("Skipping provider with missing fields: %s", entry)
             continue
+        last_loaded_raw = entry.get("last_loaded_at")
+        last_loaded_at: Optional[str] = None
+        if isinstance(last_loaded_raw, str):
+            candidate = last_loaded_raw.strip()
+            if candidate:
+                try:
+                    datetime.fromisoformat(candidate)
+                except ValueError:
+                    log.warning(
+                        "Ignoring invalid last_loaded_at timestamp for provider %s", name
+                    )
+                else:
+                    last_loaded_at = candidate
         providers.append(
             ProviderConfig(
                 name=str(name),
                 playlist_url=str(playlist),
                 api_url=str(entry.get("api_url")) if entry.get("api_url") is not None else None,
+                last_loaded_at=last_loaded_at,
             )
         )
     for entry in favorites_raw:
