@@ -103,16 +103,17 @@ TabPane {
     margin-bottom: 1;
 }
 
+#playing-channels-list {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+.playing-channel-entry {
+    margin-bottom: 1;
+}
+
 #channel-actions {
     layout: horizontal;
-}
-
-#playing-actions {
-    layout: horizontal;
-}
-
-#playing-actions Button {
-    width: 1fr;
 }
 
 #now-playing-list {
