@@ -23,6 +23,7 @@ def test_load_and_save_round_trip(tmp_path: Path) -> None:
                 name="Provider A",
                 playlist_url="https://example.com/a.m3u",
                 api_url="https://example.com/a/status",
+                last_loaded_at="2024-01-01T00:00:00+00:00",
             ),
             ProviderConfig(
                 name="Provider B",
@@ -35,6 +36,8 @@ def test_load_and_save_round_trip(tmp_path: Path) -> None:
     assert [provider.name for provider in loaded.providers] == ["Provider A", "Provider B"]
     assert loaded.providers[0].api_url == "https://example.com/a/status"
     assert loaded.providers[1].api_url is None
+    assert loaded.providers[0].last_loaded_at == "2024-01-01T00:00:00+00:00"
+    assert loaded.providers[1].last_loaded_at is None
     assert loaded.favorites == []
 
 
@@ -83,3 +86,17 @@ favorites:
     loaded = load_config(config_path)
     assert len(loaded.favorites) == 1
     assert loaded.favorites[0].channel_name == "Valid Channel"
+
+
+def test_invalid_last_loaded_at_is_ignored(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+providers:
+  - name: Demo
+    playlist_url: https://example.com/demo.m3u
+    last_loaded_at: invalid timestamp
+""".strip()
+    )
+    loaded = load_config(config_path)
+    assert loaded.providers[0].last_loaded_at is None

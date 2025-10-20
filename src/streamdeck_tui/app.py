@@ -175,6 +175,25 @@ class ProviderState:
     last_channel_count: Optional[int] = None
 
 
+def _parse_last_loaded_at(value: Optional[str], provider_name: str) -> Optional[datetime]:
+    """Return a parsed ``datetime`` for ``value`` if possible."""
+
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        log.warning(
+            "Invalid last_loaded_at timestamp for provider %s: %s",
+            provider_name,
+            value,
+        )
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 class ChannelListItem(ListItem):
     """Render an IPTV channel in the list."""
 
@@ -1036,7 +1055,13 @@ class StreamdeckApp(App[None]):
         self._apply_requested_theme(theme)
         self._config = config
         self._config_path = config_path or CONFIG_PATH
-        self._states: list[ProviderState] = [ProviderState(provider) for provider in config.providers]
+        self._states: list[ProviderState] = []
+        for provider in config.providers:
+            state = ProviderState(provider)
+            state.last_loaded_at = _parse_last_loaded_at(
+                provider.last_loaded_at, provider.name
+            )
+            self._states.append(state)
         self._active_index: Optional[int] = 0 if self._states else None
         self._editing_name: Optional[str] = (
             self._states[0].config.name if self._states else None
@@ -2682,6 +2707,13 @@ class StreamdeckApp(App[None]):
         state.last_channel_count = len(channels)
         if state.loading_bytes_total is None:
             state.loading_bytes_total = state.loading_bytes_read
+        timestamp = state.last_loaded_at.isoformat() if state.last_loaded_at else None
+        state.config.last_loaded_at = timestamp
+        for provider in self._config.providers:
+            if provider.name == state.config.name:
+                provider.last_loaded_at = timestamp
+                break
+        save_config(self._config, self._config_path)
         log.info(
             "Loaded %d channels for provider %s",
             len(channels),
