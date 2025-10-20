@@ -315,15 +315,77 @@ class _ChannelListSummary(Static):
         self.update(f"[b]{self._title}[/]\n{body}")
 
 
-class SelectedChannelsPanel(_ChannelListSummary):
+class SelectedChannelListItem(ListItem):
+    """Render a queued channel summary inside the selected list."""
+
+    def __init__(self, summary: str) -> None:
+        super().__init__(
+            Static(summary, markup=True, classes="selected-channel-entry")
+        )
+        self.can_focus = False
+
+
+class SelectedChannelsPanel(Vertical):
     """Display all channels that have been queued for playback."""
 
-    def __init__(self, **kwargs) -> None:
-        super().__init__(
-            title="Selected channels",
-            empty_message="No channels have been queued for playback.",
-            **kwargs,
-        )
+    entries: reactive[tuple[str, ...]] = reactive(tuple())
+
+    def __init__(self, *, soft_limit: int = 10, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._soft_limit = soft_limit
+        self._empty_message = "No channels have been queued for playback."
+        self._title_widget: Optional[Static] = None
+        self._list_view: Optional[ListView] = None
+        self._footer_widget: Optional[Static] = None
+        self.can_focus = False
+
+    def compose(self) -> ComposeResult:
+        yield Static("[b]Selected channels[/]", id="selected-channels-title")
+        yield ListView(id="selected-channels-list")
+        yield Static(self._empty_message, id="selected-channels-footer")
+
+    def on_mount(self) -> None:
+        self._title_widget = self.query_one("#selected-channels-title", Static)
+        self._list_view = self.query_one("#selected-channels-list", ListView)
+        self._footer_widget = self.query_one("#selected-channels-footer", Static)
+        self._list_view.can_focus = False
+        self._list_view.display = False
+        self._list_view.styles.height = "auto"
+        self._list_view.styles.max_height = self._soft_limit * 3
+        self._refresh()
+
+    def watch_entries(self, _: tuple[str, ...]) -> None:
+        self._refresh()
+
+    def update_entries(self, entries: Sequence[str]) -> None:
+        self.entries = tuple(entries)
+
+    def _refresh(self) -> None:
+        if (
+            self._title_widget is None
+            or self._list_view is None
+            or self._footer_widget is None
+        ):
+            return
+        total = len(self.entries)
+        title = "Selected channels" if total == 0 else f"Selected channels ({total})"
+        self._title_widget.update(f"[b]{title}[/]")
+        self._list_view.clear()
+        if total == 0:
+            self._list_view.display = False
+            self._footer_widget.update(self._empty_message)
+            return
+        display_entries = self.entries[: self._soft_limit]
+        for summary in display_entries:
+            self._list_view.append(SelectedChannelListItem(summary))
+        self._list_view.display = True
+        remaining = total - len(display_entries)
+        if remaining > 0:
+            self._footer_widget.update(
+                f"Showing first {self._soft_limit} of {total} selected channels."
+            )
+        else:
+            self._footer_widget.update(f"Total selected channels: {total}")
 
 
 class PlayingChannelsPanel(_ChannelListSummary):
@@ -1079,7 +1141,6 @@ TabPane {
 }
 
 #channel-info,
-#selected-channels,
 #playing-channels {
     border: heavy $surface;
     width: 1fr;
@@ -1088,8 +1149,32 @@ TabPane {
     overflow-y: auto;
 }
 
+#selected-channels {
+    border: heavy $surface;
+    width: 1fr;
+    min-height: 6;
+    height: auto;
+    max-height: 32;
+    overflow: hidden;
+}
+
 #channel-info,
 #selected-channels {
+    margin-bottom: 1;
+}
+
+#selected-channels-list {
+    height: auto;
+    max-height: 24;
+    overflow-y: auto;
+}
+
+#selected-channels-footer {
+    margin-top: 1;
+    color: $text-muted;
+}
+
+.selected-channel-entry {
     margin-bottom: 1;
 }
 
