@@ -305,7 +305,7 @@ class ChannelListView(ListView):
                 event.stop()
                 app.call_after_refresh(app._focus_playing_list)
                 return
-        await super()._on_key(event)
+        await super().on_key(event)
 
 
 class FavoriteListItem(ListItem):
@@ -429,7 +429,7 @@ class PlayingChannelListView(ListView):
                 event.stop()
                 app.call_after_refresh(app._focus_channel_list)
                 return
-        await super()._on_key(event)
+        await super().on_key(event)
 
 
 class PlayingChannelsPanel(Vertical):
