@@ -121,6 +121,10 @@ TabPane {
     overflow-y: auto;
 }
 
+#now-playing-modal {
+    height: 1fr;
+}
+
 #now-playing-actions {
     layout: horizontal;
     margin-top: 1;

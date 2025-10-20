@@ -631,33 +631,29 @@ class NowPlayingModal(ModalScreen[None]):
         self._selected_keys: set[tuple[str, str]] = set()
 
     def compose(self) -> ComposeResult:
-        yield Vertical(
-            Label("Now playing", id="now-playing-title"),
-            ListView(id="now-playing-list"),
-            Static(
+        with Vertical(id="now-playing-modal"):
+            yield Label("Now playing", id="now-playing-title")
+            yield ListView(id="now-playing-list")
+            yield Static(
                 "Sort by bitrate to close the lowest quality streams manually.",
                 id="now-playing-help",
-            ),
-            Horizontal(
-                Button(
+            )
+            with Horizontal(id="now-playing-actions"):
+                yield Button(
                     "Refresh bitrate order",
                     id="now-playing-sort",
-                ),
-                Button(
+                )
+                yield Button(
                     "Stop selected",
                     id="now-playing-stop",
                     variant="warning",
-                ),
-                Button(
+                )
+                yield Button(
                     "Stop all",
                     id="now-playing-stop-all",
                     variant="warning",
-                ),
-                Button("Close", id="now-playing-close", variant="primary"),
-                id="now-playing-actions",
-            ),
-            expand=True,
-        )
+                )
+                yield Button("Close", id="now-playing-close", variant="primary")
 
     def on_mount(self) -> None:  # pragma: no cover - UI callback
         self._refresh_list()
@@ -1224,6 +1220,10 @@ TabPane {
 #now-playing-list {
     height: 1fr;
     overflow-y: auto;
+}
+
+#now-playing-modal {
+    height: 1fr;
 }
 
 #now-playing-actions {
