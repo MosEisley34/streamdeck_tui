@@ -803,7 +803,9 @@ class NowPlayingModal(ModalScreen[None]):
             self.dismiss(None)
             event.stop()
             return
-        super().on_key(event)
+        handler = getattr(super(), "on_key", None)
+        if handler is not None:
+            handler(event)
 
 
 class StatusBar(Static):
