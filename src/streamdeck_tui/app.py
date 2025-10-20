@@ -481,6 +481,18 @@ class NowPlayingListItem(ListItem):
         self._selected = selected
         self._refresh()
 
+    def update_entry(self, entry: NowPlayingEntry, *, selected: bool) -> None:
+        """Refresh the rendered content for *entry* without rebuilding the widget."""
+
+        entry_changed = self.entry != entry
+        selection_changed = self._selected != selected
+        if entry_changed:
+            self.entry = entry
+        if selection_changed:
+            self._selected = selected
+        if entry_changed or selection_changed:
+            self._refresh()
+
     def _refresh(self) -> None:
         provider_markup = self._app._provider_markup(self.entry.provider)
         channel_name = escape(self.entry.channel.name)
@@ -565,15 +577,30 @@ class NowPlayingModal(ModalScreen[None]):
         list_view = self._get_list_view()
         if list_view is None:
             return
-        current_key: Optional[tuple[str, str]] = None
+        existing_items = [
+            child
+            for child in list(getattr(list_view, "children", ()))
+            if isinstance(child, NowPlayingListItem)
+        ]
         index = getattr(list_view, "index", None)
-        if index is not None and 0 <= index < len(self._entries):
-            current_key = self._entries[index].key
-        list_view.clear()
+        current_key: Optional[tuple[str, str]] = None
+        if index is not None and 0 <= index < len(existing_items):
+            current_key = existing_items[index].entry.key
         if not self._entries:
+            list_view.clear()
             list_view.index = None
             self._update_controls()
             return
+        new_keys = [entry.key for entry in self._entries]
+        existing_keys = [item.entry.key for item in existing_items]
+        if new_keys == existing_keys:
+            for item, entry in zip(existing_items, self._entries):
+                item.update_entry(entry, selected=entry.key in self._selected_keys)
+            if getattr(list_view, "index", None) is None:
+                list_view.index = 0
+            self._update_controls()
+            return
+        list_view.clear()
         for entry in self._entries:
             list_view.append(
                 NowPlayingListItem(
