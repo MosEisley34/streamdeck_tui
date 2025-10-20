@@ -37,7 +37,6 @@ try:
     from textual.worker import Worker
     from textual.screen import ModalScreen
     from textual.widgets import (
-        Button,
         Footer,
         Header,
         Input,
@@ -638,22 +637,6 @@ class NowPlayingModal(ModalScreen[None]):
                 "Sort by bitrate to close the lowest quality streams manually.",
                 id="now-playing-help",
             )
-            with Horizontal(id="now-playing-actions"):
-                yield Button(
-                    "Refresh bitrate order",
-                    id="now-playing-sort",
-                )
-                yield Button(
-                    "Stop selected",
-                    id="now-playing-stop",
-                    variant="warning",
-                )
-                yield Button(
-                    "Stop all",
-                    id="now-playing-stop-all",
-                    variant="warning",
-                )
-                yield Button("Close", id="now-playing-close", variant="primary")
 
     def on_mount(self) -> None:  # pragma: no cover - UI callback
         self._refresh_list()
@@ -697,7 +680,6 @@ class NowPlayingModal(ModalScreen[None]):
         if not self._entries:
             list_view.clear()
             list_view.index = None
-            self._update_controls()
             return
         new_keys = [entry.key for entry in self._entries]
         existing_keys = [item.entry.key for item in existing_items]
@@ -706,7 +688,6 @@ class NowPlayingModal(ModalScreen[None]):
                 item.update_entry(entry, selected=entry.key in self._selected_keys)
             if getattr(list_view, "index", None) is None:
                 list_view.index = 0
-            self._update_controls()
             return
         list_view.clear()
         for entry in self._entries:
@@ -724,42 +705,40 @@ class NowPlayingModal(ModalScreen[None]):
                     break
         if getattr(list_view, "index", None) is None:
             list_view.index = 0
-        self._update_controls()
 
     def _refresh_help(self) -> None:
         try:
             help_text = self.query_one("#now-playing-help", Static)
         except Exception:
             return
-        if self._entries:
-            help_text.update(
-                "Sort by bitrate to close the lowest quality streams manually. "
-                "Press space to toggle channel selection."
-            )
-        else:
+        if not self._entries:
             help_text.update("No streams are currently playing.")
+            return
 
-    def _update_controls(self) -> None:
         list_view = self._get_list_view()
         selected_index: Optional[int] = None
         if list_view is not None:
             selected_index = getattr(list_view, "index", None)
-        has_entries = bool(self._entries)
         has_selection = bool(self._selected_keys)
         selected_valid = (
-            selected_index is not None
-            and 0 <= selected_index < len(self._entries)
+            selected_index is not None and 0 <= selected_index < len(self._entries)
         )
-        for selector, enabled in (
-            ("#now-playing-sort", has_entries),
-            ("#now-playing-stop", has_entries and (selected_valid or has_selection)),
-            ("#now-playing-stop-all", has_entries),
-        ):
-            try:
-                button = self.query_one(selector, Button)
-            except Exception:
-                continue
-            button.disabled = not enabled
+        instructions = [
+            "Press space to toggle channel selection.",
+            "Press r to refresh the bitrate order.",
+        ]
+        if has_selection or selected_valid:
+            instructions.append(
+                "Press s to stop the highlighted or selected streams."
+            )
+        instructions.append("Press a to stop all playback.")
+        instructions.append("Press escape to close the manager.")
+        help_text.update(" ".join(instructions))
+
+    def _update_controls(self) -> None:
+        """Backwards-compatible alias for the removed button updater."""
+
+        self._refresh_help()
 
     def _selected_entry(self) -> Optional[NowPlayingEntry]:
         list_view = self._get_list_view()
@@ -772,16 +751,14 @@ class NowPlayingModal(ModalScreen[None]):
 
     @on(ListView.Highlighted, "#now-playing-list")
     def _on_highlighted(self, _: ListView.Highlighted) -> None:  # pragma: no cover
-        self._update_controls()
+        self._refresh_help()
 
-    @on(Button.Pressed, "#now-playing-sort")
-    def _on_sort_pressed(self, _: Button.Pressed) -> None:  # pragma: no cover
+    def _sort_entries(self) -> None:
         self._sort_by_bitrate = True
         self._apply_sort()
         self._refresh_list()
 
-    @on(Button.Pressed, "#now-playing-stop")
-    def _on_stop_selected(self, _: Button.Pressed) -> None:  # pragma: no cover
+    def _stop_selected_entries(self) -> None:
         keys: list[tuple[str, str]]
         if self._selected_keys:
             keys = list(self._selected_keys)
@@ -795,16 +772,6 @@ class NowPlayingModal(ModalScreen[None]):
             self._selected_keys.discard(key)
         self.set_entries(self._app._collect_now_playing_entries())
 
-    @on(Button.Pressed, "#now-playing-stop-all")
-    def _on_stop_all(self, _: Button.Pressed) -> None:  # pragma: no cover
-        self._app.action_stop_all_playback()
-        self._selected_keys.clear()
-        self.set_entries(self._app._collect_now_playing_entries())
-
-    @on(Button.Pressed, "#now-playing-close")
-    def _on_close(self, _: Button.Pressed) -> None:  # pragma: no cover
-        self.dismiss(None)
-
     def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
         if event.key == "space":
             entry = self._selected_entry()
@@ -814,7 +781,26 @@ class NowPlayingModal(ModalScreen[None]):
                 else:
                     self._selected_keys.add(entry.key)
                 self._refresh_list()
-                self._update_controls()
+                self._refresh_help()
+            event.stop()
+            return
+        if event.key == "r":
+            self._sort_entries()
+            self._refresh_help()
+            event.stop()
+            return
+        if event.key == "s":
+            self._stop_selected_entries()
+            event.stop()
+            return
+        if event.key == "a":
+            self._app.action_stop_all_playback()
+            self._selected_keys.clear()
+            self.set_entries(self._app._collect_now_playing_entries())
+            event.stop()
+            return
+        if event.key == "escape":
+            self.dismiss(None)
             event.stop()
             return
         super().on_key(event)
@@ -1044,9 +1030,6 @@ class ProviderForm(Static):
         yield Input(placeholder="Playlist URL", id="provider-playlist")
         yield Label("API URL (optional)")
         yield Input(placeholder="Status API URL (optional)", id="provider-api")
-        with Horizontal(id="form-buttons"):
-            yield Button("Reset", id="provider-reset")
-            yield Button("Save", id="provider-save", variant="success")
 
     def populate(self, provider: ProviderConfig) -> None:
         self.query_one("#provider-name", Input).value = provider.name
@@ -1082,18 +1065,21 @@ class ReloadConfirmation(ModalScreen[bool]):
             "\nReloading again may not be necessary. Proceed?"
         )
         with Vertical(id="reload-confirmation"):
-            yield Label(message, id="reload-confirmation-message")
-            with Horizontal(id="reload-confirmation-buttons"):
-                yield Button("Cancel", id="reload-cancel", variant="warning")
-                yield Button("Reload", id="reload-confirm", variant="success")
+            yield Label(
+                message + "\nPress y to reload or n/escape to cancel.",
+                id="reload-confirmation-message",
+            )
 
-    @on(Button.Pressed, "#reload-confirm")
-    def _on_confirm(self, _: Button.Pressed) -> None:
-        self.dismiss(True)
-
-    @on(Button.Pressed, "#reload-cancel")
-    def _on_cancel(self, _: Button.Pressed) -> None:
-        self.dismiss(False)
+    def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
+        if event.key in {"y", "enter"}:
+            self.dismiss(True)
+            event.stop()
+            return
+        if event.key in {"n", "escape"}:
+            self.dismiss(False)
+            event.stop()
+            return
+        super().on_key(event)
 
 
 # We keep a very small inline stylesheet so the application can always boot
@@ -1118,11 +1104,6 @@ TabPane {
 
 #providers-pane {
     min-width: 24;
-}
-
-#provider-actions {
-    layout: horizontal;
-    padding-top: 1;
 }
 
 #provider-progress {
@@ -1213,10 +1194,6 @@ TabPane {
     margin-bottom: 1;
 }
 
-#channel-actions {
-    layout: horizontal;
-}
-
 #now-playing-list {
     height: 1fr;
     overflow-y: auto;
@@ -1226,19 +1203,15 @@ TabPane {
     height: 1fr;
 }
 
-#now-playing-actions {
-    layout: horizontal;
-    margin-top: 1;
-}
-
-#now-playing-actions Button {
-    width: 1fr;
-}
-
 #log-viewer {
     border: heavy $surface;
     padding: 0 1;
     overflow-y: auto;
+}
+
+#channel-actions-help {
+    padding: 1;
+    color: $text-muted;
 }
 
 StatusBar {
@@ -1271,6 +1244,12 @@ class StreamdeckApp(App[None]):
         tab_binding("escape", "clear_search", "Clear search", tabs={"channels"}),
         tab_binding("n", "new_provider", "New provider", tabs={"providers"}),
         tab_binding("ctrl+s", "save_provider", "Save provider", tabs={"providers"}),
+        tab_binding(
+            "ctrl+r",
+            "reset_provider_form",
+            "Reset form",
+            tabs={"providers"},
+        ),
         tab_binding("delete", "delete_provider", "Delete provider", tabs={"providers"}),
         tab_binding("r", "reload_provider", "Reload provider", tabs={"providers"}),
         tab_binding("p", "play_channel", "Play", tabs={"channels", "favorites"}),
@@ -1418,11 +1397,13 @@ class StreamdeckApp(App[None]):
                     yield ListView(id="provider-list")
                     yield ConnectionUsageBar(id="connection-usage")
                     yield ProviderProgress(id="provider-progress")
-                    with Horizontal(id="provider-actions"):
-                        yield Button("New", id="provider-new", variant="primary")
-                        yield Button("Delete", id="provider-delete", variant="warning")
                     yield Static(
-                        f"Add or remove providers below. Changes are saved to config.yaml ({self._config_destination_label()}).",
+                        (
+                            "Add or remove providers below. Changes are saved to "
+                            f"config.yaml ({self._config_destination_label()}). "
+                            "Keyboard shortcuts: N to add, Delete to remove, "
+                            "Ctrl+S to save, Ctrl+R to reset the form, R to reload."
+                        ),
                         id="providers-help",
                     )
                     with Vertical(id="provider-form-container"):
@@ -1435,27 +1416,14 @@ class StreamdeckApp(App[None]):
                         with Vertical(id="channel-sidebar"):
                             yield ChannelInfo(id="channel-info")
                             yield SelectedChannelsPanel(id="selected-channels")
-                            with Horizontal(id="channel-actions"):
-                                yield Button(
-                                    "Play",
-                                    id="channel-play",
-                                    variant="success",
-                                )
-                                yield Button(
-                                    "Stop selected",
-                                    id="channel-stop",
-                                    variant="warning",
-                                    disabled=True,
-                                )
-                                yield Button(
-                                    "Favorite",
-                                    id="channel-favorite",
-                                )
-                                yield Button(
-                                    "Probe player",
-                                    id="channel-probe",
-                                    variant="default",
-                                )
+                            yield Static(
+                                (
+                                    "Shortcuts: P to play, S to stop the highlighted or "
+                                    "queued channels, Space to queue, F to toggle "
+                                    "favorites, Ctrl+Shift+P to probe the player."
+                                ),
+                                id="channel-actions-help",
+                            )
                             yield PlayingChannelsPanel(id="playing-channels")
             with TabPane("Favorites", id="favorites-tab"):
                 with Vertical(id="favorites-pane"):
@@ -1732,7 +1700,6 @@ class StreamdeckApp(App[None]):
                 lines.extend(self._format_stream_stats(stats))
             entries.append("\n".join(lines))
         panel.update_entries(entries)
-        self._set_stop_buttons_enabled(bool(self._playing_channels))
         self._update_now_playing_modal_entries()
         self._refresh_selected_channels_panel()
 
@@ -1848,11 +1815,6 @@ class StreamdeckApp(App[None]):
         self._playback_started_at.clear()
         self._refresh_playing_channels_panel()
         self._player_process = None
-
-    def _set_stop_buttons_enabled(self, enabled: bool) -> None:
-        button = self._query_optional_widget("#channel-stop", Button)
-        if button is not None:
-            button.disabled = not enabled
 
     def _active_playback_keys(self) -> set[tuple[str, str]]:
         return set(self._player_handles.keys()) | set(self._player_tasks.keys())
@@ -3140,6 +3102,21 @@ class StreamdeckApp(App[None]):
         if self._save_provider():
             self._hide_provider_form()
 
+    def action_reset_provider_form(self) -> None:
+        if not self._require_active_tab(
+            "providers", self._PROVIDERS_TAB_REQUIRED_STATUS
+        ):
+            return
+        form = self.query_one(ProviderForm)
+        if self._editing_name is None:
+            form.clear()
+        else:
+            state = self._current_state()
+            if state:
+                form.populate(state.config)
+        self._set_status("Form reset")
+        log.debug("Provider form reset")
+
     def action_probe_player(self) -> None:
         if self._probing_player:
             self._set_status("Player probe already in progress")
@@ -3474,45 +3451,6 @@ class StreamdeckApp(App[None]):
                 elapsed_label,
             )
             self._set_status(f"Reload cancelled for {state.config.name}")
-
-    @on(Button.Pressed, "#provider-new")
-    def _on_new_pressed(self, _: Button.Pressed) -> None:
-        self.action_new_provider()
-
-    @on(Button.Pressed, "#provider-save")
-    def _on_save_pressed(self, _: Button.Pressed) -> None:
-        self.action_save_provider()
-
-    @on(Button.Pressed, "#provider-delete")
-    def _on_delete_pressed(self, _: Button.Pressed) -> None:
-        self.action_delete_provider()
-
-    @on(Button.Pressed, "#provider-reset")
-    def _on_reset_pressed(self, _: Button.Pressed) -> None:
-        if self._editing_name is None:
-            self.query_one(ProviderForm).clear()
-        else:
-            state = self._current_state()
-            if state:
-                self.query_one(ProviderForm).populate(state.config)
-        self._set_status("Form reset")
-        log.debug("Provider form reset")
-
-    @on(Button.Pressed, "#channel-play")
-    def _on_channel_play(self, _: Button.Pressed) -> None:
-        self.action_play_channel()
-
-    @on(Button.Pressed, "#channel-stop")
-    def _on_channel_stop(self, _: Button.Pressed) -> None:
-        self.action_stop_channel()
-
-    @on(Button.Pressed, "#channel-probe")
-    def _on_channel_probe(self, _: Button.Pressed) -> None:
-        self.action_probe_player()
-
-    @on(Button.Pressed, "#channel-favorite")
-    def _on_channel_favorite(self, _: Button.Pressed) -> None:
-        self.action_toggle_favorite()
 
     @on(TabbedContent.TabActivated, "#main-tabs")
     def _on_main_tab_activated(
