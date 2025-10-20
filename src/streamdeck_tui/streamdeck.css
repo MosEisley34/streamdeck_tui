@@ -92,6 +92,11 @@ TabPane {
     width: 1fr;
 }
 
+#now-playing-list {
+    height: 1fr;
+    overflow-y: auto;
+}
+
 #now-playing-actions {
     layout: horizontal;
     margin-top: 1;
