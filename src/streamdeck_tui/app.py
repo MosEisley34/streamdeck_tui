@@ -760,6 +760,27 @@ class TabAwareFooter(Footer):
             self.call_after_refresh(self.recompose)
 
 
+class MainTabbedContent(TabbedContent):
+    """Tabbed container that moves focus into the active pane on arrow presses."""
+
+    async def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
+        if event.key == "down":
+            app = getattr(self, "app", None)
+            focus_content = getattr(app, "_focus_tab_content", None)
+            active_tab = getattr(app, "_active_tab", None)
+            if callable(focus_content) and isinstance(active_tab, str):
+                event.stop()
+                app.call_after_refresh(focus_content, active_tab)
+                return
+        handler = getattr(super(), "on_key", None)
+        if callable(handler):
+            result = handler(event)
+            if inspect.isawaitable(result):
+                await result
+            return
+        await super()._on_key(event)
+
+
 class ProviderProgress(Static):
     """Visual progress indicator for provider loading."""
 
@@ -1112,7 +1133,6 @@ class StreamdeckApp(App[None]):
             tabs={"channels", "favorites"},
         ),
         Binding("ctrl+shift+p", "probe_player", "Probe player"),
-        Binding("down", "focus_active_tab_content", show=False, priority=True),
     ]
     _PROVIDERS_TAB_REQUIRED_STATUS = "Switch to the Providers tab to manage providers"
     Footer = TabAwareFooter
@@ -1227,7 +1247,7 @@ class StreamdeckApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with TabbedContent(id="main-tabs"):
+        with MainTabbedContent(id="main-tabs"):
             with TabPane("Providers", id="providers-tab"):
                 with Vertical(id="providers-pane"):
                     yield Label("Providers", id="providers-title")
