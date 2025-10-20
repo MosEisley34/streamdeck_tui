@@ -291,30 +291,6 @@ class FavoriteListItem(ListItem):
         self.favorite = favorite
 
 
-class _ChannelListSummary(Static):
-    """Render a titled list of channel summaries."""
-
-    entries: reactive[tuple[str, ...]] = reactive(tuple())
-
-    def __init__(self, *, title: str, empty_message: str, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self._title = title
-        self._empty_message = empty_message
-
-    def on_mount(self) -> None:
-        self._refresh()
-
-    def watch_entries(self, _: tuple[str, ...]) -> None:
-        self._refresh()
-
-    def update_entries(self, entries: Sequence[str]) -> None:
-        self.entries = tuple(entries)
-
-    def _refresh(self) -> None:
-        body = "\n\n".join(self.entries) if self.entries else self._empty_message
-        self.update(f"[b]{self._title}[/]\n{body}")
-
-
 class SelectedChannelListItem(ListItem):
     """Render a queued channel summary inside the selected list."""
 
@@ -388,15 +364,69 @@ class SelectedChannelsPanel(Vertical):
             self._footer_widget.update(f"Total selected channels: {total}")
 
 
-class PlayingChannelsPanel(_ChannelListSummary):
+class PlayingChannelListItem(ListItem):
+    """Render a playing channel summary inside the now playing list."""
+
+    def __init__(self, summary: str) -> None:
+        super().__init__(
+            Static(summary, markup=True, classes="playing-channel-entry")
+        )
+        self.can_focus = False
+
+
+class PlayingChannelsPanel(Vertical):
     """Display information about all actively playing channels."""
 
+    entries: reactive[tuple[str, ...]] = reactive(tuple())
+
     def __init__(self, **kwargs) -> None:
-        super().__init__(
-            title="Now playing",
-            empty_message="No streams are currently playing.",
-            **kwargs,
+        super().__init__(**kwargs)
+        self._title_widget: Optional[Static] = None
+        self._list_view: Optional[ListView] = None
+        self._footer_widget: Optional[Static] = None
+        self.can_focus = False
+
+    def compose(self) -> ComposeResult:
+        yield Static("[b]Now playing[/]", id="playing-channels-title")
+        yield ListView(id="playing-channels-list")
+        yield Static(
+            "No streams are currently playing.", id="playing-channels-footer"
         )
+
+    def on_mount(self) -> None:
+        self._title_widget = self.query_one("#playing-channels-title", Static)
+        self._list_view = self.query_one("#playing-channels-list", ListView)
+        self._footer_widget = self.query_one("#playing-channels-footer", Static)
+        self._list_view.can_focus = False
+        self._list_view.display = False
+        self._list_view.styles.height = "1fr"
+        self._refresh()
+
+    def watch_entries(self, _: tuple[str, ...]) -> None:
+        self._refresh()
+
+    def update_entries(self, entries: Sequence[str]) -> None:
+        self.entries = tuple(entries)
+
+    def _refresh(self) -> None:
+        if (
+            self._title_widget is None
+            or self._list_view is None
+            or self._footer_widget is None
+        ):
+            return
+        total = len(self.entries)
+        title = "Now playing" if total == 0 else f"Now playing ({total})"
+        self._title_widget.update(f"[b]{title}[/]")
+        self._list_view.clear()
+        if total == 0:
+            self._list_view.display = False
+            self._footer_widget.update("No streams are currently playing.")
+            return
+        for summary in self.entries:
+            self._list_view.append(PlayingChannelListItem(summary))
+        self._list_view.display = True
+        self._footer_widget.update("Press [b]m[/] to manage playback.")
 
 
 class _ChannelSummary(Static):
@@ -1178,16 +1208,17 @@ TabPane {
     margin-bottom: 1;
 }
 
+#playing-channels-list {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+.playing-channel-entry {
+    margin-bottom: 1;
+}
+
 #channel-actions {
     layout: horizontal;
-}
-
-#playing-actions {
-    layout: horizontal;
-}
-
-#playing-actions Button {
-    width: 1fr;
 }
 
 #now-playing-list {
@@ -1426,18 +1457,6 @@ class StreamdeckApp(App[None]):
                                     variant="default",
                                 )
                             yield PlayingChannelsPanel(id="playing-channels")
-                            with Horizontal(id="playing-actions"):
-                                yield Button(
-                                    "Manage playback",
-                                    id="playing-manage",
-                                    disabled=True,
-                                )
-                                yield Button(
-                                    "Stop all",
-                                    id="playing-stop",
-                                    variant="warning",
-                                    disabled=True,
-                                )
             with TabPane("Favorites", id="favorites-tab"):
                 with Vertical(id="favorites-pane"):
                     yield ListView(id="favorites-list")
@@ -1831,10 +1850,9 @@ class StreamdeckApp(App[None]):
         self._player_process = None
 
     def _set_stop_buttons_enabled(self, enabled: bool) -> None:
-        for selector in ("#channel-stop", "#playing-stop", "#playing-manage"):
-            button = self._query_optional_widget(selector, Button)
-            if button is not None:
-                button.disabled = not enabled
+        button = self._query_optional_widget("#channel-stop", Button)
+        if button is not None:
+            button.disabled = not enabled
 
     def _active_playback_keys(self) -> set[tuple[str, str]]:
         return set(self._player_handles.keys()) | set(self._player_tasks.keys())
@@ -3487,14 +3505,6 @@ class StreamdeckApp(App[None]):
     @on(Button.Pressed, "#channel-stop")
     def _on_channel_stop(self, _: Button.Pressed) -> None:
         self.action_stop_channel()
-
-    @on(Button.Pressed, "#playing-stop")
-    def _on_playing_stop(self, _: Button.Pressed) -> None:
-        self.action_stop_all_playback()
-
-    @on(Button.Pressed, "#playing-manage")
-    def _on_playing_manage(self, _: Button.Pressed) -> None:
-        self.action_show_now_playing()
 
     @on(Button.Pressed, "#channel-probe")
     def _on_channel_probe(self, _: Button.Pressed) -> None:
