@@ -223,11 +223,13 @@ class ChannelListItem(ListItem):
         *,
         queued: bool = False,
         provider_markup: Optional[str] = None,
+        connection_summary: Optional[str] = None,
     ) -> None:
         self.channel = channel
         self.provider_name = provider_name
         self._provider_markup = provider_markup
         self._queued = queued
+        self._connection_summary = connection_summary
         # Enable markup so provider colours can be applied while ensuring
         # channel names are escaped to avoid injection of markup sequences.
         self._label = Label("", id="channel-name", markup=True)
@@ -249,8 +251,18 @@ class ChannelListItem(ListItem):
             if self._provider_markup is not None
             else escape(self.provider_name)
         )
+        group = escape(self.channel.group) if self.channel.group else "—"
         name = escape(self.channel.name)
-        self._label.update(f"{prefix}{provider} • {name}")
+        parts = [provider, group, name]
+        if self._connection_summary:
+            parts.append(escape(self._connection_summary))
+        self._label.update(f"{prefix}{' | '.join(parts)}")
+
+    def set_connection_summary(self, summary: Optional[str]) -> None:
+        if self._connection_summary == summary:
+            return
+        self._connection_summary = summary
+        self._refresh_label()
 
 
 class SearchInput(Input):
@@ -555,257 +567,7 @@ class PlayingChannelInfo(_ChannelSummary):
         return f"Bitrate: Live {live} • Avg {average}"
 
 
-@dataclass
-class NowPlayingEntry:
-    """Snapshot of an active playback session for modal display."""
 
-    key: tuple[str, str]
-    provider: str
-    channel: Channel
-    stats: Optional[StreamStats] = None
-    started_at: Optional[datetime] = None
-
-    @property
-    def bitrate_score(self) -> float:
-        if self.stats and self.stats.average_bitrate:
-            return self.stats.average_bitrate
-        return 0.0
-
-
-class NowPlayingListItem(ListItem):
-    """Render a playing channel inside the management modal."""
-
-    def __init__(
-        self, app: "StreamdeckApp", entry: NowPlayingEntry, *, selected: bool = False
-    ) -> None:
-        self._app = app
-        self.entry = entry
-        self._selected = selected
-        self._label = Label("", markup=True)
-        super().__init__(self._label)
-        self._refresh()
-
-    def set_selected(self, selected: bool) -> None:
-        if self._selected == selected:
-            return
-        self._selected = selected
-        self._refresh()
-
-    def update_entry(self, entry: NowPlayingEntry, *, selected: bool) -> None:
-        """Refresh the rendered content for *entry* without rebuilding the widget."""
-
-        entry_changed = self.entry != entry
-        selection_changed = self._selected != selected
-        if entry_changed:
-            self.entry = entry
-        if selection_changed:
-            self._selected = selected
-        if entry_changed or selection_changed:
-            self._refresh()
-
-    def _refresh(self) -> None:
-        provider_markup = self._app._provider_markup(self.entry.provider)
-        channel_name = escape(self.entry.channel.name)
-        indicator = "☑" if self._selected else "☐"
-        lines = [f"{indicator} {provider_markup} • {channel_name}"]
-        if self.entry.channel.group:
-            lines.append(f"Group: {escape(self.entry.channel.group)}")
-        elapsed = self._app._format_playback_elapsed(self.entry.started_at)
-        if elapsed:
-            lines.append(f"Elapsed: {elapsed}")
-        stats = self.entry.stats
-        if stats is not None:
-            lines.extend(self._app._format_stream_stats(stats))
-        self._label.update("\n".join(lines))
-
-
-class NowPlayingModal(ModalScreen[None]):
-    """Modal screen used to manage currently playing channels."""
-
-    def __init__(self, app: "StreamdeckApp") -> None:
-        super().__init__()
-        self._app = app
-        self._entries: list[NowPlayingEntry] = []
-        self._sort_by_bitrate: bool = True
-        self._selected_keys: set[tuple[str, str]] = set()
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="now-playing-modal"):
-            yield Label("Now playing", id="now-playing-title")
-            yield ListView(id="now-playing-list")
-            yield Static(
-                "Sort by bitrate to close the lowest quality streams manually.",
-                id="now-playing-help",
-            )
-
-    def on_mount(self) -> None:  # pragma: no cover - UI callback
-        self._refresh_list()
-        self._refresh_help()
-
-    def on_unmount(self) -> None:  # pragma: no cover - UI callback
-        self._app._on_now_playing_modal_closed(self)
-
-    def set_entries(self, entries: Sequence[NowPlayingEntry]) -> None:
-        self._entries = list(entries)
-        active_keys = {entry.key for entry in self._entries}
-        self._selected_keys &= active_keys
-        self._apply_sort()
-        self._refresh_list()
-        self._refresh_help()
-
-    def _apply_sort(self) -> None:
-        if not self._sort_by_bitrate:
-            return
-        self._entries.sort(key=lambda entry: entry.bitrate_score, reverse=True)
-
-    def _get_list_view(self) -> Optional[ListView]:
-        try:
-            return self.query_one("#now-playing-list", ListView)
-        except Exception:
-            return None
-
-    def _refresh_list(self) -> None:
-        list_view = self._get_list_view()
-        if list_view is None:
-            return
-        existing_items = [
-            child
-            for child in list(getattr(list_view, "children", ()))
-            if isinstance(child, NowPlayingListItem)
-        ]
-        index = getattr(list_view, "index", None)
-        current_key: Optional[tuple[str, str]] = None
-        if index is not None and 0 <= index < len(existing_items):
-            current_key = existing_items[index].entry.key
-        if not self._entries:
-            list_view.clear()
-            list_view.index = None
-            return
-        new_keys = [entry.key for entry in self._entries]
-        existing_keys = [item.entry.key for item in existing_items]
-        if new_keys == existing_keys:
-            for item, entry in zip(existing_items, self._entries):
-                item.update_entry(entry, selected=entry.key in self._selected_keys)
-            if getattr(list_view, "index", None) is None:
-                list_view.index = 0
-            return
-        list_view.clear()
-        for entry in self._entries:
-            list_view.append(
-                NowPlayingListItem(
-                    self._app,
-                    entry,
-                    selected=entry.key in self._selected_keys,
-                )
-            )
-        if current_key is not None:
-            for idx, entry in enumerate(self._entries):
-                if entry.key == current_key:
-                    list_view.index = idx
-                    break
-        if getattr(list_view, "index", None) is None:
-            list_view.index = 0
-
-    def _refresh_help(self) -> None:
-        try:
-            help_text = self.query_one("#now-playing-help", Static)
-        except Exception:
-            return
-        if not self._entries:
-            help_text.update("No streams are currently playing.")
-            return
-
-        list_view = self._get_list_view()
-        selected_index: Optional[int] = None
-        if list_view is not None:
-            selected_index = getattr(list_view, "index", None)
-        has_selection = bool(self._selected_keys)
-        selected_valid = (
-            selected_index is not None and 0 <= selected_index < len(self._entries)
-        )
-        instructions = [
-            "Press space to toggle channel selection.",
-            "Press r to refresh the bitrate order.",
-        ]
-        if has_selection or selected_valid:
-            instructions.append(
-                "Press s to stop the highlighted or selected streams."
-            )
-        instructions.append("Press a to stop all playback.")
-        instructions.append("Press escape to close the manager.")
-        help_text.update(" ".join(instructions))
-
-    def _update_controls(self) -> None:
-        """Backwards-compatible alias for the removed button updater."""
-
-        self._refresh_help()
-
-    def _selected_entry(self) -> Optional[NowPlayingEntry]:
-        list_view = self._get_list_view()
-        if list_view is None:
-            return None
-        index = getattr(list_view, "index", None)
-        if index is None or not (0 <= index < len(self._entries)):
-            return None
-        return self._entries[index]
-
-    @on(ListView.Highlighted, "#now-playing-list")
-    def _on_highlighted(self, _: ListView.Highlighted) -> None:  # pragma: no cover
-        self._refresh_help()
-
-    def _sort_entries(self) -> None:
-        self._sort_by_bitrate = True
-        self._apply_sort()
-        self._refresh_list()
-
-    def _stop_selected_entries(self) -> None:
-        keys: list[tuple[str, str]]
-        if self._selected_keys:
-            keys = list(self._selected_keys)
-        else:
-            entry = self._selected_entry()
-            if entry is None:
-                return
-            keys = [entry.key]
-        self._app._stop_channels(keys)
-        for key in keys:
-            self._selected_keys.discard(key)
-        self.set_entries(self._app._collect_now_playing_entries())
-
-    def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
-        if event.key == "space":
-            entry = self._selected_entry()
-            if entry is not None:
-                if entry.key in self._selected_keys:
-                    self._selected_keys.remove(entry.key)
-                else:
-                    self._selected_keys.add(entry.key)
-                self._refresh_list()
-                self._refresh_help()
-            event.stop()
-            return
-        if event.key == "r":
-            self._sort_entries()
-            self._refresh_help()
-            event.stop()
-            return
-        if event.key == "s":
-            self._stop_selected_entries()
-            event.stop()
-            return
-        if event.key == "a":
-            self._app.action_stop_all_playback()
-            self._selected_keys.clear()
-            self.set_entries(self._app._collect_now_playing_entries())
-            event.stop()
-            return
-        if event.key == "escape":
-            self.dismiss(None)
-            event.stop()
-            return
-        handler = getattr(super(), "on_key", None)
-        if handler is not None:
-            handler(event)
 
 
 class StatusBar(Static):
@@ -1086,8 +848,7 @@ class ReloadConfirmation(ModalScreen[bool]):
 
 # We keep a very small inline stylesheet so the application can always boot
 # without depending on external CSS files.
-_INLINE_DEFAULT_CSS = """
-#main-tabs {
+_INLINE_DEFAULT_CSS = """#main-tabs {
     height: 1fr;
 }
 
@@ -1142,14 +903,12 @@ TabPane {
     min-width: 22;
 }
 
-#channel-info,
 #selected-channels,
 #playing-channels,
 #favorites-help {
     padding: 1;
 }
 
-#channel-info,
 #playing-channels {
     border: heavy $surface;
     width: 1fr;
@@ -1165,10 +924,10 @@ TabPane {
     height: auto;
     max-height: 32;
     overflow: hidden;
+    margin-bottom: 1;
 }
 
-#channel-info,
-#selected-channels {
+#playing-channels {
     margin-bottom: 1;
 }
 
@@ -1194,15 +953,6 @@ TabPane {
 
 .playing-channel-entry {
     margin-bottom: 1;
-}
-
-#now-playing-list {
-    height: 1fr;
-    overflow-y: auto;
-}
-
-#now-playing-modal {
-    height: 1fr;
 }
 
 #log-viewer {
@@ -1275,7 +1025,6 @@ class StreamdeckApp(App[None]):
             tabs={"channels", "favorites"},
         ),
         Binding("ctrl+shift+p", "probe_player", "Probe player"),
-        Binding("m", "show_now_playing", "Manage playback"),
         Binding("down", "focus_active_tab_content", show=False, priority=True),
     ]
     _PROVIDERS_TAB_REQUIRED_STATUS = "Switch to the Providers tab to manage providers"
@@ -1361,7 +1110,6 @@ class StreamdeckApp(App[None]):
         ] = {}
         self._latest_stats: dict[tuple[str, str], StreamStats] = {}
         self._playback_started_at: dict[tuple[str, str], datetime] = {}
-        self._now_playing_modal: Optional[NowPlayingModal] = None
         self._player_process: Optional[Process] = None
         self._worker: Optional[Worker] = None
         self._provider_load_queue: deque[tuple[int, bool]] = deque()
@@ -1416,8 +1164,8 @@ class StreamdeckApp(App[None]):
                     with Horizontal(id="channel-browser"):
                         yield ChannelListView(id="channel-list")
                         with Vertical(id="channel-sidebar"):
-                            yield ChannelInfo(id="channel-info")
                             yield SelectedChannelsPanel(id="selected-channels")
+                            yield PlayingChannelsPanel(id="playing-channels")
                             yield Static(
                                 (
                                     "Shortcuts: P to play, S to stop the highlighted or "
@@ -1426,7 +1174,6 @@ class StreamdeckApp(App[None]):
                                 ),
                                 id="channel-actions-help",
                             )
-                            yield PlayingChannelsPanel(id="playing-channels")
             with TabPane("Favorites", id="favorites-tab"):
                 with Vertical(id="favorites-pane"):
                     yield ListView(id="favorites-list")
@@ -1702,7 +1449,6 @@ class StreamdeckApp(App[None]):
                 lines.extend(self._format_stream_stats(stats))
             entries.append("\n".join(lines))
         panel.update_entries(entries)
-        self._update_now_playing_modal_entries()
         self._refresh_selected_channels_panel()
 
     def _ensure_playback_timer(self) -> None:
@@ -1847,29 +1593,6 @@ class StreamdeckApp(App[None]):
                 "Stop requested for channels: %s", ", ".join(stopped_names)
             )
 
-    def _collect_now_playing_entries(self) -> list[NowPlayingEntry]:
-        entries: list[NowPlayingEntry] = []
-        for key, (provider_name, channel) in self._playing_channels.items():
-            entries.append(
-                NowPlayingEntry(
-                    key=key,
-                    provider=provider_name,
-                    channel=channel,
-                    stats=self._latest_stats.get(key),
-                    started_at=self._playback_started_at.get(key),
-                )
-            )
-        return entries
-
-    def _update_now_playing_modal_entries(self) -> None:
-        modal = self._now_playing_modal
-        if modal is None:
-            return
-        modal.set_entries(self._collect_now_playing_entries())
-
-    def _on_now_playing_modal_closed(self, modal: NowPlayingModal) -> None:
-        if self._now_playing_modal is modal:
-            self._now_playing_modal = None
 
     @staticmethod
     def _generate_provider_color(provider: str) -> str:
@@ -1890,6 +1613,19 @@ class StreamdeckApp(App[None]):
     def _provider_markup(self, provider: str) -> str:
         color = self._provider_color(provider) or "white"
         return f"[{color}]{escape(provider)}[/]"
+
+    def _provider_connection_summary(self, provider: str) -> Optional[str]:
+        state = self._provider_state_by_name(provider)
+        if state is None or state.connection_status is None:
+            return None
+        status = state.connection_status
+        if (
+            status.active_connections is None
+            or status.max_connections is None
+            or status.max_connections <= 0
+        ):
+            return None
+        return f"Connections: {status.active_connections}/{status.max_connections}"
 
     def _start_player_monitor(
         self, key: tuple[str, str], handle: PlayerHandle
@@ -2697,6 +2433,9 @@ class StreamdeckApp(App[None]):
                             channel,
                             queued=self._is_channel_queued(provider_name, channel),
                             provider_markup=self._provider_markup(provider_name),
+                            connection_summary=self._provider_connection_summary(
+                                provider_name
+                            ),
                         )
                     )
             target_index = selected_global_index
@@ -2725,6 +2464,21 @@ class StreamdeckApp(App[None]):
 
         self._channel_window_start = start
         render_window()
+
+    def _refresh_visible_channel_window(self) -> None:
+        if self._active_tab != "channels":
+            return
+        list_view = self._query_optional_widget("#channel-list", ListView)
+        if list_view is None:
+            return
+        index = getattr(list_view, "index", None)
+        selected = (
+            self._channel_window_start + index if index is not None else None
+        )
+        self._render_channel_window_for_start(
+            self._channel_window_start,
+            selected_global_index=selected,
+        )
 
     def _maybe_shift_channel_window(self, global_index: int) -> None:
         total = len(self.filtered_channels)
@@ -3009,6 +2763,7 @@ class StreamdeckApp(App[None]):
         self._refresh_provider_list()
         self._update_provider_progress_widget(state)
         self._update_connection_usage_widget(state)
+        self._refresh_visible_channel_window()
 
     def _handle_status_error(self, state: ProviderState, message: str) -> None:
         state.connection_status = None
@@ -3024,6 +2779,7 @@ class StreamdeckApp(App[None]):
         self._refresh_provider_list()
         self._update_provider_progress_widget(state)
         self._update_connection_usage_widget(state)
+        self._refresh_visible_channel_window()
 
     def _select_provider(self, index: int) -> None:
         if not (0 <= index < len(self._states)):
@@ -3304,15 +3060,6 @@ class StreamdeckApp(App[None]):
             self._set_status("No active player to stop")
             return
         self._stop_channels(active_keys)
-
-    def action_show_now_playing(self) -> None:
-        if not self._playing_channels:
-            self._set_status("No streams currently playing")
-            return
-        modal = NowPlayingModal(self)
-        modal.set_entries(self._collect_now_playing_entries())
-        self._now_playing_modal = modal
-        self.push_screen(modal)
 
     def action_toggle_favorite(self) -> None:
         provider_name, channel, favorite_entry = self._get_selected_entry()

@@ -53,14 +53,12 @@ TabPane {
     min-width: 22;
 }
 
-#channel-info,
 #selected-channels,
 #playing-channels,
 #favorites-help {
     padding: 1;
 }
 
-#channel-info,
 #playing-channels {
     border: heavy $surface;
     width: 1fr;
@@ -76,10 +74,10 @@ TabPane {
     height: auto;
     max-height: 32;
     overflow: hidden;
+    margin-bottom: 1;
 }
 
-#channel-info,
-#selected-channels {
+#playing-channels {
     margin-bottom: 1;
 }
 
@@ -105,15 +103,6 @@ TabPane {
 
 .playing-channel-entry {
     margin-bottom: 1;
-}
-
-#now-playing-list {
-    height: 1fr;
-    overflow-y: auto;
-}
-
-#now-playing-modal {
-    height: 1fr;
 }
 
 #log-viewer {
