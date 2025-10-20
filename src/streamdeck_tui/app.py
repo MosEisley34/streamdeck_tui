@@ -292,6 +292,15 @@ class ChannelListView(ListView):
         if isinstance(app, StreamdeckApp):
             app._mark_channel_list_ready()
 
+    def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
+        if event.key == "right":
+            app = getattr(self, "app", None)
+            if isinstance(app, StreamdeckApp):
+                event.stop()
+                app.call_after_refresh(app._focus_playing_list)
+                return
+        super().on_key(event)
+
 
 class FavoriteListItem(ListItem):
     """Render a favorited channel in the list."""
@@ -378,11 +387,43 @@ class SelectedChannelsPanel(Vertical):
 class PlayingChannelListItem(ListItem):
     """Render a playing channel summary inside the now playing list."""
 
+    _SELECTED_PREFIX = "▶ "
+    _UNSELECTED_PREFIX = "  "
+
     def __init__(self, summary: str) -> None:
-        super().__init__(
-            Static(summary, markup=True, classes="playing-channel-entry")
-        )
-        self.can_focus = False
+        self._summary = summary
+        self._content = Static("", markup=True, classes="playing-channel-entry")
+        super().__init__(self._content)
+        self._selected = False
+        self._refresh_content()
+
+    def set_selected(self, selected: bool) -> None:
+        """Update the visual indicator for selection."""
+
+        if self._selected == selected:
+            return
+        self._selected = selected
+        self._refresh_content()
+
+    def _refresh_content(self) -> None:
+        prefix = self._SELECTED_PREFIX if self._selected else self._UNSELECTED_PREFIX
+        lines = self._summary.split("\n")
+        if lines:
+            lines[0] = f"{prefix}{lines[0]}"
+        self._content.update("\n".join(lines))
+
+
+class PlayingChannelListView(ListView):
+    """List view showing playing channels with keyboard navigation helpers."""
+
+    def on_key(self, event: events.Key) -> None:  # pragma: no cover - UI callback
+        if event.key == "left":
+            app = getattr(self, "app", None)
+            if isinstance(app, StreamdeckApp):
+                event.stop()
+                app.call_after_refresh(app._focus_channel_list)
+                return
+        super().on_key(event)
 
 
 class PlayingChannelsPanel(Vertical):
@@ -393,22 +434,26 @@ class PlayingChannelsPanel(Vertical):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._title_widget: Optional[Static] = None
-        self._list_view: Optional[ListView] = None
+        self._list_view: Optional[PlayingChannelListView] = None
         self._footer_widget: Optional[Static] = None
+        self._keys: tuple[tuple[str, str], ...] = tuple()
+        self._selected_index: Optional[int] = None
         self.can_focus = False
 
     def compose(self) -> ComposeResult:
         yield Static("[b]Now playing[/]", id="playing-channels-title")
-        yield ListView(id="playing-channels-list")
+        yield PlayingChannelListView(id="playing-channels-list")
         yield Static(
             "No streams are currently playing.", id="playing-channels-footer"
         )
 
     def on_mount(self) -> None:
         self._title_widget = self.query_one("#playing-channels-title", Static)
-        self._list_view = self.query_one("#playing-channels-list", ListView)
+        self._list_view = self.query_one(
+            "#playing-channels-list", PlayingChannelListView
+        )
         self._footer_widget = self.query_one("#playing-channels-footer", Static)
-        self._list_view.can_focus = False
+        self._list_view.can_focus = True
         self._list_view.display = False
         self._list_view.styles.height = "1fr"
         self._refresh()
@@ -416,8 +461,21 @@ class PlayingChannelsPanel(Vertical):
     def watch_entries(self, _: tuple[str, ...]) -> None:
         self._refresh()
 
-    def update_entries(self, entries: Sequence[str]) -> None:
+    def update_entries(
+        self, entries: Sequence[str], keys: Sequence[tuple[str, str]]
+    ) -> None:
+        self._keys = tuple(keys)
         self.entries = tuple(entries)
+
+    def get_selected_key(self) -> Optional[tuple[str, str]]:
+        if self._list_view is None:
+            return None
+        index = self._list_view.index
+        if index is None or index < 0:
+            return None
+        if not (0 <= index < len(self._keys)):
+            return None
+        return self._keys[index]
 
     def _refresh(self) -> None:
         if (
@@ -433,11 +491,40 @@ class PlayingChannelsPanel(Vertical):
         if total == 0:
             self._list_view.display = False
             self._footer_widget.update("No streams are currently playing.")
+            self._selected_index = None
+            self._list_view.index = None
             return
-        for summary in self.entries:
-            self._list_view.append(PlayingChannelListItem(summary))
+        current_index = self._list_view.index
+        if current_index is None:
+            current_index = self._selected_index
+        if current_index is None and total:
+            current_index = 0
+        if current_index is not None:
+            current_index = max(0, min(total - 1, current_index))
+        for idx, summary in enumerate(self.entries):
+            item = PlayingChannelListItem(summary)
+            item.set_selected(idx == current_index)
+            self._list_view.append(item)
+        if current_index is not None:
+            self._list_view.index = current_index
+        self._selected_index = current_index
         self._list_view.display = True
         self._footer_widget.update("Press [b]m[/] to manage playback.")
+
+    def on_list_view_highlighted(
+        self, event: ListView.Highlighted
+    ) -> None:  # pragma: no cover - UI callback
+        if self._list_view is None or event.list_view is not self._list_view:
+            return
+        self._selected_index = event.index
+        self._update_selection_indicator(event.index)
+
+    def _update_selection_indicator(self, selected_index: Optional[int]) -> None:
+        if self._list_view is None:
+            return
+        for idx, child in enumerate(self._list_view.children):
+            if isinstance(child, PlayingChannelListItem):
+                child.set_selected(idx == selected_index)
 
 
 class _ChannelSummary(Static):
@@ -1234,6 +1321,16 @@ class StreamdeckApp(App[None]):
             list_view.index = max(0, target)
         list_view.focus()
 
+    def _focus_playing_list(self) -> None:
+        list_view = self._query_optional_widget(
+            "#playing-channels-list", ListView
+        )
+        if list_view is None:
+            return
+        if list_view.children and getattr(list_view, "index", None) is None:
+            list_view.index = 0
+        list_view.focus()
+
     def _update_provider_form_visibility(self, visible: bool) -> None:
         container = self._query_optional_widget("#provider-form-container", Vertical)
         if container is None:
@@ -1436,6 +1533,7 @@ class StreamdeckApp(App[None]):
         if panel is None:
             return
         entries: list[str] = []
+        keys: list[tuple[str, str]] = []
         for key, (provider_name, channel) in self._playing_channels.items():
             provider_markup = self._provider_markup(provider_name)
             lines = [f"{provider_markup} • {escape(channel.name)}"]
@@ -1448,7 +1546,8 @@ class StreamdeckApp(App[None]):
             if stats is not None:
                 lines.extend(self._format_stream_stats(stats))
             entries.append("\n".join(lines))
-        panel.update_entries(entries)
+            keys.append(key)
+        panel.update_entries(entries, keys)
         self._refresh_selected_channels_panel()
 
     def _ensure_playback_timer(self) -> None:
@@ -1897,6 +1996,21 @@ class StreamdeckApp(App[None]):
             return None, None, None
         favorite = self._favorite_entries[index]
         return favorite.provider, self._favorite_to_channel(favorite), favorite
+
+    def _get_selected_playing_entry(
+        self,
+    ) -> Optional[tuple[str, Channel, tuple[str, str]]]:
+        panel = self._query_optional_widget(PlayingChannelsPanel)
+        if panel is None:
+            return None
+        key = panel.get_selected_key()
+        if key is None:
+            return None
+        playing = self._playing_channels.get(key)
+        if playing is None:
+            return None
+        provider_name, channel = playing
+        return provider_name, channel, key
 
     def _start_player_for_channel(self, provider_name: str, channel: Channel) -> None:
         """Launch a media player for the supplied channel."""
@@ -3043,6 +3157,18 @@ class StreamdeckApp(App[None]):
         active_keys = self._active_playback_keys()
         if not active_keys:
             self._set_status("No active player to stop")
+            return
+        focused = self.focused
+        if getattr(focused, "id", None) == "playing-channels-list":
+            playing_entry = self._get_selected_playing_entry()
+            if playing_entry is None:
+                self._set_status("Select a playing channel to stop")
+                return
+            provider_name, channel, key = playing_entry
+            if key not in active_keys:
+                self._set_status(f"{channel.name} is not currently playing")
+                return
+            self._stop_channels([key])
             return
         provider_name, channel, _ = self._get_selected_entry()
         if provider_name is None or channel is None:
