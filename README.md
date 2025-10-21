@@ -107,7 +107,7 @@ Keyboard shortcuts:
 | `/` | Focus the search box |
 | `Esc` | Clear the current channel search |
 | `n` | Start configuring a new provider |
-| `Ctrl+S` | Save provider changes |
+| `S` | Save provider changes |
 | `Delete` | Remove the selected provider |
 | `r` | Reload playlist and status for the selected provider |
 
