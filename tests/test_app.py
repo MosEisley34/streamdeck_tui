@@ -259,6 +259,39 @@ def test_connection_usage_bar_fallback_when_missing_data() -> None:
     assert "[dim]" in markup
 
 
+def test_connection_strip_updates_with_status() -> None:
+    """Connection strip should display current and maximum connections per provider."""
+
+    from rich.console import Console
+
+    from streamdeck_tui.app import ProviderConnectionStrip, StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.providers import ConnectionStatus
+
+    provider = ProviderConfig(name="Alpha", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+    state = app._states[0]
+    state.connection_status = ConnectionStatus(
+        active_connections=3, max_connections=10, message="Operating normally"
+    )
+    state.channels = []
+
+    async def run_app() -> str:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._update_connection_strip()
+            strip = app.query_one("#connection-strip", ProviderConnectionStrip)
+            renderable = strip.render()
+            console = Console(record=True)
+            console.print(renderable)
+            return console.export_text()
+
+    rendered = asyncio.run(run_app())
+
+    assert "3/10" in rendered
+    assert "Operating normally" in rendered
+
+
 def test_update_playing_info_handles_missing_widget(monkeypatch) -> None:
     """Updating the playing info should tolerate missing UI widgets."""
 

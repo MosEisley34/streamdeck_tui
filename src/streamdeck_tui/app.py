@@ -932,6 +932,23 @@ class ConnectionUsageBar(Static):
         self.update(markup)
 
 
+class ProviderConnectionStrip(Static):
+    """Display connection counts for all configured providers."""
+
+    def on_mount(self) -> None:  # pragma: no cover - relies on runtime styles
+        self.show_message("No providers configured")
+
+    def show_message(self, message: str) -> None:
+        markup = f"[dim]{escape(message)}[/dim]"
+        self.update(markup)
+
+    def update_entries(self, entries: Sequence[str]) -> None:
+        if not entries:
+            self.show_message("No providers configured")
+            return
+        self.update("\n".join(entries))
+
+
 class ProviderForm(Static):
     """Form used to edit provider configuration."""
 
@@ -1027,6 +1044,13 @@ TabPane {
     border: heavy $surface;
     padding: 0 1;
     min-height: 3;
+}
+
+#connection-strip {
+    border: heavy $surface;
+    padding: 0 1;
+    min-height: 3;
+    margin: 1 0;
 }
 
 #channel-browser {
@@ -1287,6 +1311,7 @@ class StreamdeckApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield ProviderConnectionStrip(id="connection-strip")
         with MainTabbedContent(id="main-tabs"):
             with TabPane("Providers", id="providers-tab"):
                 with Vertical(id="providers-pane"):
@@ -2285,6 +2310,7 @@ class StreamdeckApp(App[None]):
             list_view.index = None
         self._update_provider_progress_widget()
         self._update_connection_usage_widget()
+        self._update_connection_strip()
 
     def _update_provider_progress_widget(
         self, state: Optional[ProviderState] = None
@@ -2326,6 +2352,36 @@ class StreamdeckApp(App[None]):
             percent=state.connection_usage_percent,
             message=status.message,
         )
+
+    def _update_connection_strip(self) -> None:
+        widget = self._query_optional_widget(
+            "#connection-strip", ProviderConnectionStrip
+        )
+        if widget is None:
+            return
+        if not self._states:
+            widget.show_message("No providers configured")
+            return
+        entries: list[str] = []
+        for state in self._states:
+            provider_label = self._provider_markup(state.config.name)
+            status = state.connection_status
+            if status is None:
+                message = state.last_error or "Status unavailable"
+                entry = (
+                    f"{provider_label} [b]–/–[/b] connections "
+                    f"[dim]{escape(message)}[/dim]"
+                )
+            else:
+                active = status.active_connections
+                maximum = status.max_connections
+                active_label = str(active) if active is not None else "–"
+                max_label = str(maximum) if maximum is not None else "–"
+                entry = f"{provider_label} [b]{active_label}/{max_label}[/b] connections"
+                if status.message:
+                    entry = f"{entry} [dim]{escape(status.message)}[/dim]"
+            entries.append(entry)
+        widget.update_entries(entries)
 
     def _clear_channels(self, message: str = "No provider selected") -> None:
         self.filtered_channels = []
