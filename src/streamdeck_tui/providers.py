@@ -75,6 +75,9 @@ async def fetch_connection_status(url: str, *, timeout: float = 10.0) -> Connect
     status = ConnectionStatus()
     if isinstance(payload, dict):
         active = payload.get("active_connections")
+        if active is None:
+            # Some providers expose ``active_cons`` instead of ``active_connections``.
+            active = payload.get("active_cons")
         maximum = payload.get("max_connections")
         coerced_active = _coerce_connection_count(active)
         coerced_maximum = _coerce_connection_count(maximum)
