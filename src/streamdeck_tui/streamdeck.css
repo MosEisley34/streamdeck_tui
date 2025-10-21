@@ -31,6 +31,13 @@ TabPane {
     min-height: 3;
 }
 
+#connection-strip {
+    border: heavy $surface;
+    padding: 0 1;
+    min-height: 3;
+    margin: 1 0;
+}
+
 #channel-browser {
     layout: horizontal;
     height: 1fr;
