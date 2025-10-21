@@ -12,6 +12,31 @@ from .logging_utils import get_logger
 log = get_logger(__name__)
 
 
+def _coerce_connection_count(value: object) -> Optional[int]:
+    """Convert ``value`` into an integer connection count if possible."""
+
+    if isinstance(value, bool):  # Guard against ``True``/``False`` being treated as 1/0.
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            try:
+                numeric = float(text)
+            except ValueError:
+                return None
+            if numeric.is_integer():
+                return int(numeric)
+    return None
+
+
 @dataclass(slots=True)
 class ConnectionStatus:
     """Status information returned from a provider API."""
@@ -51,10 +76,12 @@ async def fetch_connection_status(url: str, *, timeout: float = 10.0) -> Connect
     if isinstance(payload, dict):
         active = payload.get("active_connections")
         maximum = payload.get("max_connections")
-        if isinstance(active, int):
-            status.active_connections = active
-        if isinstance(maximum, int):
-            status.max_connections = maximum
+        coerced_active = _coerce_connection_count(active)
+        coerced_maximum = _coerce_connection_count(maximum)
+        if coerced_active is not None:
+            status.active_connections = coerced_active
+        if coerced_maximum is not None:
+            status.max_connections = coerced_maximum
         message = payload.get("message")
         if isinstance(message, str):
             status.message = message
