@@ -74,16 +74,34 @@ async def fetch_connection_status(url: str, *, timeout: float = 10.0) -> Connect
         raise RuntimeError(str(exc)) from exc
     status = ConnectionStatus()
     if isinstance(payload, dict):
-        active = payload.get("active_connections")
-        if active is None:
-            # Some providers expose ``active_cons`` instead of ``active_connections``.
-            active = payload.get("active_cons")
-        maximum = payload.get("max_connections")
-        if maximum is None:
-            # Some providers expose ``max_cons`` instead of ``max_connections``.
-            maximum = payload.get("max_cons")
-        coerced_active = _coerce_connection_count(active)
-        coerced_maximum = _coerce_connection_count(maximum)
+        def lookup_counts(container: dict[str, object], keys: tuple[str, ...]) -> Optional[int]:
+            for key in keys:
+                value = container.get(key)
+                if value is None:
+                    continue
+                coerced = _coerce_connection_count(value)
+                if coerced is not None:
+                    return coerced
+            return None
+
+        active_keys = ("active_connections", "active_cons")
+        maximum_keys = ("max_connections", "max_cons")
+
+        coerced_active = lookup_counts(payload, active_keys)
+        coerced_maximum = lookup_counts(payload, maximum_keys)
+
+        if coerced_active is None or coerced_maximum is None:
+            nested_sections = ("user_info",)
+            for section in nested_sections:
+                nested = payload.get(section)
+                if not isinstance(nested, dict):
+                    continue
+                if coerced_active is None:
+                    coerced_active = lookup_counts(nested, active_keys)
+                if coerced_maximum is None:
+                    coerced_maximum = lookup_counts(nested, maximum_keys)
+                if coerced_active is not None and coerced_maximum is not None:
+                    break
         if coerced_active is not None:
             status.active_connections = coerced_active
         if coerced_maximum is not None:
