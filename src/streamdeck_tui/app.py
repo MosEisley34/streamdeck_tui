@@ -315,7 +315,7 @@ class ChannelListView(ListView):
                 event.stop()
                 app.call_after_refresh(app._focus_playing_list)
                 return
-        await super().on_key(event)
+        await _invoke_parent_on_key(ChannelListView, self, event)
 
 
 class FavoriteListItem(ListItem):
