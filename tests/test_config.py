@@ -4,6 +4,8 @@ from streamdeck_tui.config import (
     AppConfig,
     FavoriteChannel,
     ProviderConfig,
+    build_xtream_urls,
+    extract_xtream_credentials,
     load_config,
     save_config,
 )
@@ -100,3 +102,63 @@ providers:
     )
     loaded = load_config(config_path)
     assert loaded.providers[0].last_loaded_at is None
+
+
+def test_xtream_credentials_generate_urls(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+providers:
+  - name: Xtream Demo
+    xtream_base_url: https://portal.example.com:8080/sub
+    xtream_username: demo user
+    xtream_password: secret pass
+""".strip()
+    )
+    loaded = load_config(config_path)
+    assert len(loaded.providers) == 1
+    provider = loaded.providers[0]
+    playlist, api = build_xtream_urls(
+        "https://portal.example.com:8080/sub",
+        "demo user",
+        "secret pass",
+    )
+    assert provider.playlist_url == playlist
+    assert provider.api_url == api
+    assert provider.xtream_base_url == "https://portal.example.com:8080/sub"
+    assert provider.xtream_username == "demo user"
+    assert provider.xtream_password == "secret pass"
+
+
+def test_save_config_persists_xtream_fields(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    playlist, api = build_xtream_urls("https://portal.example.com", "user", "pass")
+    config = AppConfig(
+        providers=[
+            ProviderConfig(
+                name="Xtream",
+                playlist_url=playlist,
+                api_url=api,
+                xtream_base_url="https://portal.example.com",
+                xtream_username="user",
+                xtream_password="pass",
+            )
+        ]
+    )
+    save_config(config, config_path)
+    raw = config_path.read_text()
+    assert "xtream_base_url: https://portal.example.com" in raw
+    assert "xtream_username: user" in raw
+    assert "xtream_password: pass" in raw
+    reloaded = load_config(config_path)
+    assert reloaded.providers[0].xtream_base_url == "https://portal.example.com"
+    assert reloaded.providers[0].xtream_username == "user"
+    assert reloaded.providers[0].xtream_password == "pass"
+
+
+def test_extract_xtream_credentials_from_playlist() -> None:
+    playlist, _ = build_xtream_urls("https://portal.example.com", "user", "pass")
+    base, username, password = extract_xtream_credentials(playlist)
+    assert base == "https://portal.example.com"
+    assert username == "user"
+    assert password == "pass"
