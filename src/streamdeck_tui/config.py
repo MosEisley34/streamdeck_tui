@@ -4,7 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Tuple
+from urllib.parse import parse_qs, quote_plus, urlparse, urlunparse
 
 from .logging_utils import get_logger
 
@@ -21,6 +22,9 @@ class ProviderConfig:
     playlist_url: str
     api_url: Optional[str] = None
     last_loaded_at: Optional[str] = None
+    xtream_base_url: Optional[str] = None
+    xtream_username: Optional[str] = None
+    xtream_password: Optional[str] = None
 
 
 @dataclass(slots=True)
@@ -99,6 +103,62 @@ class FavoriteChannel:
         return data
 
 
+def _normalize_xtream_base_url(base_url: str) -> str:
+    base = base_url.strip()
+    if not base:
+        raise ValueError("Xtream base URL cannot be empty")
+    return base.rstrip("/")
+
+
+def build_xtream_urls(base_url: str, username: str, password: str) -> Tuple[str, str]:
+    """Return Xtream Codes playlist and API URLs for the provided credentials."""
+
+    normalized = _normalize_xtream_base_url(base_url)
+    user = quote_plus(username)
+    passwd = quote_plus(password)
+    playlist = (
+        f"{normalized}/get.php?username={user}&password={passwd}&type=m3u_plus&output=ts"
+    )
+    api = f"{normalized}/player_api.php?username={user}&password={passwd}"
+    return playlist, api
+
+
+def extract_xtream_credentials(
+    playlist_url: str,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Extract Xtream Codes credentials from a playlist URL if present."""
+
+    try:
+        parsed = urlparse(playlist_url)
+    except ValueError:
+        return None, None, None
+    if not parsed.scheme or not parsed.netloc:
+        return None, None, None
+    if not parsed.path.endswith("get.php"):
+        return None, None, None
+    params = parse_qs(parsed.query)
+    usernames = params.get("username")
+    passwords = params.get("password")
+    if not usernames or not passwords:
+        return None, None, None
+    username = usernames[0]
+    password = passwords[0]
+    base_path, _, _ = parsed.path.rpartition("/")
+    base = urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            base_path.rstrip("/"),
+            "",
+            "",
+            "",
+        )
+    ).rstrip("/")
+    if not base:
+        base = f"{parsed.scheme}://{parsed.netloc}"
+    return base or None, username or None, password or None
+
+
 def _ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -162,6 +222,12 @@ def _dump_config(data: AppConfig) -> str:
             lines.append("    playlist_url: " + provider.playlist_url)
             if provider.api_url:
                 lines.append("    api_url: " + provider.api_url)
+            if provider.xtream_base_url:
+                lines.append("    xtream_base_url: " + provider.xtream_base_url)
+            if provider.xtream_username:
+                lines.append("    xtream_username: " + provider.xtream_username)
+            if provider.xtream_password:
+                lines.append("    xtream_password: " + provider.xtream_password)
             if provider.last_loaded_at:
                 lines.append("    last_loaded_at: " + provider.last_loaded_at)
     else:
@@ -200,9 +266,53 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         if not isinstance(entry, dict):  # pragma: no cover - invalid config guard
             continue
         name = entry.get("name")
-        playlist = entry.get("playlist_url")
+        playlist_raw = entry.get("playlist_url")
+        api_raw = entry.get("api_url")
+        base_raw = entry.get("xtream_base_url")
+        username_raw = entry.get("xtream_username")
+        password_raw = entry.get("xtream_password")
+
+        playlist: Optional[str] = None
+        if isinstance(playlist_raw, str) and playlist_raw.strip():
+            playlist = playlist_raw.strip()
+
+        api_url: Optional[str] = None
+        if isinstance(api_raw, str):
+            candidate = api_raw.strip()
+            if candidate:
+                api_url = candidate
+
+        xtream_base = base_raw.strip() if isinstance(base_raw, str) else None
+        xtream_username = username_raw.strip() if isinstance(username_raw, str) else None
+        xtream_password = password_raw.strip() if isinstance(password_raw, str) else None
+        has_xtream_credentials = all(
+            value for value in (xtream_base, xtream_username, xtream_password)
+        )
+        if has_xtream_credentials:
+            try:
+                generated_playlist, generated_api = build_xtream_urls(
+                    xtream_base or "",
+                    xtream_username or "",
+                    xtream_password or "",
+                )
+            except ValueError:
+                log.warning("Invalid Xtream configuration for provider %s", name or "<unknown>")
+            else:
+                if not playlist:
+                    playlist = generated_playlist
+                if not api_url:
+                    api_url = generated_api
+        else:
+            xtream_base = None
+            xtream_username = None
+            xtream_password = None
+
         if not name or not playlist:
-            log.warning("Skipping provider with missing fields: %s", entry)
+            log.warning(
+                "Skipping provider with missing fields (name present: %s, playlist present: %s)",
+                bool(name),
+                bool(playlist),
+            )
             continue
         last_loaded_raw = entry.get("last_loaded_at")
         last_loaded_at: Optional[str] = None
@@ -221,8 +331,11 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
             ProviderConfig(
                 name=str(name),
                 playlist_url=str(playlist),
-                api_url=str(entry.get("api_url")) if entry.get("api_url") is not None else None,
+                api_url=api_url,
                 last_loaded_at=last_loaded_at,
+                xtream_base_url=xtream_base,
+                xtream_username=xtream_username,
+                xtream_password=xtream_password,
             )
         )
     for entry in favorites_raw:

@@ -57,7 +57,15 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency guard
 
 from rich.markup import escape
 
-from .config import AppConfig, FavoriteChannel, ProviderConfig, CONFIG_PATH, save_config
+from .config import (
+    AppConfig,
+    FavoriteChannel,
+    ProviderConfig,
+    CONFIG_PATH,
+    build_xtream_urls,
+    extract_xtream_credentials,
+    save_config,
+)
 from .logging_utils import configure_logging, get_logger
 from .playlist import (
     Channel,
@@ -955,29 +963,71 @@ class ProviderForm(Static):
     def compose(self) -> ComposeResult:
         yield Label("Provider name")
         yield Input(placeholder="Name", id="provider-name")
-        yield Label("Playlist URL")
-        yield Input(placeholder="Playlist URL", id="provider-playlist")
-        yield Label("API URL (optional)")
-        yield Input(placeholder="Status API URL (optional)", id="provider-api")
+        yield Label("Xtream Codes server URL")
+        yield Input(placeholder="https://example.com", id="provider-server")
+        yield Label("Xtream Codes username")
+        yield Input(placeholder="Username", id="provider-username")
+        yield Label("Xtream Codes password")
+        yield Input(placeholder="Password", id="provider-password")
 
     def populate(self, provider: ProviderConfig) -> None:
         self.query_one("#provider-name", Input).value = provider.name
-        self.query_one("#provider-playlist", Input).value = provider.playlist_url
-        self.query_one("#provider-api", Input).value = provider.api_url or ""
+        base = provider.xtream_base_url
+        username = provider.xtream_username
+        password = provider.xtream_password
+        if not (base and username and password):
+            parsed_base, parsed_user, parsed_pass = extract_xtream_credentials(
+                provider.playlist_url
+            )
+            base = base or parsed_base
+            username = username or parsed_user
+            password = password or parsed_pass
+        self.query_one("#provider-server", Input).value = base or ""
+        self.query_one("#provider-username", Input).value = username or ""
+        self.query_one("#provider-password", Input).value = password or ""
 
     def read(self) -> ProviderConfig:
         name = self.query_one("#provider-name", Input).value.strip()
-        playlist = self.query_one("#provider-playlist", Input).value.strip()
-        api = self.query_one("#provider-api", Input).value.strip() or None
-        return ProviderConfig(name=name, playlist_url=playlist, api_url=api)
+        base, username, password = self.xtream_credentials()
+        playlist_url = ""
+        api_url: Optional[str] = None
+        xtream_base: Optional[str] = base or None
+        xtream_username: Optional[str] = username or None
+        xtream_password: Optional[str] = password or None
+        if base and username and password:
+            playlist_url, api_url = build_xtream_urls(base, username, password)
+        return ProviderConfig(
+            name=name,
+            playlist_url=playlist_url,
+            api_url=api_url,
+            xtream_base_url=xtream_base,
+            xtream_username=xtream_username,
+            xtream_password=xtream_password,
+        )
 
     def clear(self) -> None:
         self.query_one("#provider-name", Input).value = ""
-        self.query_one("#provider-playlist", Input).value = ""
-        self.query_one("#provider-api", Input).value = ""
+        self.query_one("#provider-server", Input).value = ""
+        self.query_one("#provider-username", Input).value = ""
+        self.query_one("#provider-password", Input).value = ""
 
     def focus_name(self) -> None:
         self.query_one("#provider-name", Input).focus()
+
+    def xtream_credentials(self) -> tuple[str, str, str]:
+        base = self.query_one("#provider-server", Input).value.strip()
+        username = self.query_one("#provider-username", Input).value.strip()
+        password = self.query_one("#provider-password", Input).value.strip()
+        return base, username, password
+
+    def focus_xtream_server(self) -> None:
+        self.query_one("#provider-server", Input).focus()
+
+    def focus_xtream_username(self) -> None:
+        self.query_one("#provider-username", Input).focus()
+
+    def focus_xtream_password(self) -> None:
+        self.query_one("#provider-password", Input).focus()
 
 
 class ReloadConfirmation(ModalScreen[bool]):
@@ -3149,8 +3199,16 @@ class StreamdeckApp(App[None]):
             form.focus_name()
             return False
         if not provider.playlist_url:
-            self._set_status("Playlist URL is required")
-            self.query_one("#provider-playlist", Input).focus()
+            base, username, password = form.xtream_credentials()
+            self._set_status(
+                "Xtream Codes server URL, username, and password are required"
+            )
+            if not base:
+                form.focus_xtream_server()
+            elif not username:
+                form.focus_xtream_username()
+            else:
+                form.focus_xtream_password()
             return False
         if self._editing_name is None:
             if self._name_exists(provider.name):
