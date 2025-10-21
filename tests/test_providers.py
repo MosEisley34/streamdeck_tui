@@ -52,3 +52,17 @@ def test_fetch_connection_status_active_cons(monkeypatch):
     assert status.active_connections == 7
     assert status.max_connections == 9
     assert status.as_label() == "7/9 connections"
+
+
+def test_fetch_connection_status_max_cons(monkeypatch):
+    def fake_fetch(url: str, timeout: float):
+        assert url == "https://example.com/status"
+        assert timeout == 10.0
+        return {"active_connections": 11, "max_cons": 42}
+
+    monkeypatch.setattr("streamdeck_tui.providers._fetch_status", fake_fetch)
+
+    status = asyncio.run(fetch_connection_status("https://example.com/status"))
+    assert status.active_connections == 11
+    assert status.max_connections == 42
+    assert status.as_label() == "11/42 connections"
