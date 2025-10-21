@@ -1244,7 +1244,7 @@ class StreamdeckApp(App[None]):
         tab_binding("/", "focus_search", "Search", tabs={"channels"}),
         tab_binding("escape", "clear_search", "Clear search", tabs={"channels"}),
         tab_binding("n", "new_provider", "New provider", tabs={"providers"}),
-        tab_binding("ctrl+s", "save_provider", "Save provider", tabs={"providers"}),
+        tab_binding("s", "save_provider", "Save provider", tabs={"providers"}),
         tab_binding(
             "ctrl+r",
             "reset_provider_form",
@@ -1401,7 +1401,7 @@ class StreamdeckApp(App[None]):
                             "Add or remove providers below. Changes are saved to "
                             f"config.yaml ({self._config_destination_label()}). "
                             "Keyboard shortcuts: N to add, Delete to remove, "
-                            "Ctrl+S to save, Ctrl+R to reset the form, R to reload."
+                            "S to save, Ctrl+R to reset the form, R to reload."
                         ),
                         id="providers-help",
                     )
