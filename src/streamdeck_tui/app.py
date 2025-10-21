@@ -447,7 +447,7 @@ class PlayingChannelListView(ListView):
                 event.stop()
                 app.call_after_refresh(app._focus_channel_list)
                 return
-        await super().on_key(event)
+        await _invoke_parent_on_key(PlayingChannelListView, self, event)
 
 
 class PlayingChannelsPanel(Vertical):
