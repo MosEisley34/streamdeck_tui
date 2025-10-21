@@ -315,6 +315,14 @@ class ChannelListView(ListView):
                 event.stop()
                 app.call_after_refresh(app._focus_playing_list)
                 return
+        if event.key == "down":
+            cursor_down = getattr(self, "action_cursor_down", None)
+            if callable(cursor_down):
+                event.stop()
+                result = cursor_down()
+                if inspect.isawaitable(result):
+                    await result
+                return
         await _invoke_parent_on_key(ChannelListView, self, event)
 
 
@@ -589,11 +597,12 @@ class _ChannelSummary(Static):
         if channel is None:
             lines.append(self._empty_message)
         else:
-            lines.append(escape(channel.name))
+            parts = [escape(channel.name)]
             if self._show_provider and self.provider:
-                lines.append(f"Provider: {escape(self.provider)}")
+                parts.append(f"Provider: {escape(self.provider)}")
             if channel.group:
-                lines.append(f"Group: {escape(channel.group)}")
+                parts.append(f"Group: {escape(channel.group)}")
+            lines.append(" • ".join(parts))
         self.update("\n".join(lines))
 
 
@@ -637,15 +646,19 @@ class PlayingChannelInfo(_ChannelSummary):
             lines.append(self._empty_message)
             self.update("\n".join(lines))
             return
+        parts: list[str] = []
         if provider:
             color = self.provider_color or "white"
-            lines.append(f"[{color}]{escape(provider)}[/]")
-        lines.append(escape(channel.name))
+            parts.append(f"[{color}]{escape(provider)}[/]")
+        parts.append(escape(channel.name))
         if channel.group:
-            lines.append(f"Group: {escape(channel.group)}")
+            parts.append(f"Group: {escape(channel.group)}")
         stats = self.stats
         if stats is not None:
-            lines.extend(self._format_stats(stats))
+            parts.extend(self._format_stats(stats))
+        if not parts:
+            parts.append(self._empty_message)
+        lines.append(" • ".join(parts))
         self.update("\n".join(lines))
 
     def _format_stats(self, stats: StreamStats) -> list[str]:
@@ -1508,16 +1521,16 @@ class StreamdeckApp(App[None]):
                 missing.append(key)
                 continue
             provider_markup = self._provider_markup(provider_name)
-            lines = [f"{provider_markup} • {escape(channel.name)}"]
+            parts = [provider_markup, escape(channel.name)]
             if channel.group:
-                lines.append(f"Group: {escape(channel.group)}")
+                parts.append(f"Group: {escape(channel.group)}")
             if key in self._playing_channels:
                 elapsed = self._format_playback_elapsed(self._playback_started_at.get(key))
                 status = "[green]Playing[/]"
                 if elapsed:
                     status = f"{status} ({elapsed})"
-                lines.append(status)
-            entries.append("\n".join(lines))
+                parts.append(status)
+            entries.append(" • ".join(parts))
         if missing:
             self._queue_remove_many(missing)
             self._refresh_channel_queue_indicators()
@@ -1583,16 +1596,16 @@ class StreamdeckApp(App[None]):
         keys: list[tuple[str, str]] = []
         for key, (provider_name, channel) in self._playing_channels.items():
             provider_markup = self._provider_markup(provider_name)
-            lines = [f"{provider_markup} • {escape(channel.name)}"]
+            parts = [provider_markup, escape(channel.name)]
             if channel.group:
-                lines.append(f"Group: {escape(channel.group)}")
+                parts.append(f"Group: {escape(channel.group)}")
             elapsed = self._format_playback_elapsed(self._playback_started_at.get(key))
             if elapsed:
-                lines.append(f"Elapsed: {elapsed}")
+                parts.append(f"Elapsed: {elapsed}")
             stats = self._latest_stats.get(key)
             if stats is not None:
-                lines.extend(self._format_stream_stats(stats))
-            entries.append("\n".join(lines))
+                parts.extend(self._format_stream_stats(stats))
+            entries.append(" • ".join(parts))
             keys.append(key)
         panel.update_entries(entries, keys)
         self._refresh_selected_channels_panel()
