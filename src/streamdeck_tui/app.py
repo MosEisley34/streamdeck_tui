@@ -153,6 +153,26 @@ def _format_bytes(size: int) -> str:
     return f"{value:.1f} PB"  # pragma: no cover - extremely large files
 
 
+async def _invoke_parent_on_key(
+    cls: type[Any], instance: Any, event: events.Key
+) -> None:
+    """Invoke the next ``on_key``/``_on_key`` implementation in ``cls``'s MRO."""
+
+    for base in cls.__mro__[1:]:
+        handler = base.__dict__.get("on_key")
+        if handler is not None:
+            result = handler(instance, event)
+            if inspect.isawaitable(result):
+                await result
+            return
+        handler = base.__dict__.get("_on_key")
+        if handler is not None:
+            result = handler(instance, event)
+            if inspect.isawaitable(result):
+                await result
+            return
+
+
 def _format_bitrate(bitrate: Optional[float]) -> str:
     """Render a bitrate value in Mbps or Kbps."""
 
@@ -277,17 +297,7 @@ class SearchInput(Input):
                     app._focus_channel_list, select_last=event.key == "up"
                 )
                 return
-        handler = getattr(super(), "on_key", None)
-        if callable(handler):
-            result = handler(event)
-            if inspect.isawaitable(result):
-                await result
-            return
-        handler = getattr(super(), "_on_key", None)
-        if callable(handler):
-            result = handler(event)
-            if inspect.isawaitable(result):
-                await result
+        await _invoke_parent_on_key(SearchInput, self, event)
 
 
 class ChannelListView(ListView):
@@ -795,7 +805,7 @@ class MainTabbedContent(TabbedContent):
             if inspect.isawaitable(result):
                 await result
             return
-        await super()._on_key(event)
+        await _invoke_parent_on_key(MainTabbedContent, self, event)
 
 
 class ProviderProgress(Static):
@@ -968,7 +978,7 @@ class ReloadConfirmation(ModalScreen[bool]):
             self.dismiss(False)
             event.stop()
             return
-        await super()._on_key(event)
+        await _invoke_parent_on_key(ReloadConfirmation, self, event)
 
 
 # We keep a very small inline stylesheet so the application can always boot
