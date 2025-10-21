@@ -5,6 +5,7 @@ import sys
 from collections import defaultdict, deque
 from contextlib import nullcontext
 from pathlib import Path
+import re
 
 if __name__ == "__main__" and __package__ is None:
     # Allow running this module directly via ``python app.py`` during local development.
@@ -37,6 +38,7 @@ try:
     from textual.worker import Worker
     from textual.screen import ModalScreen
     from textual.widgets import (
+        Checkbox,
         Footer,
         Header,
         Input,
@@ -109,6 +111,8 @@ RESOLUTION_BUCKETS: tuple[tuple[int, str, str], ...] = (
 )
 
 _TAB_SCOPES: dict[str, frozenset[str]] = {}
+
+_VOD_GROUP_PATTERN = re.compile(r"\bvod\b", re.IGNORECASE)
 
 
 def tab_binding(
@@ -202,6 +206,21 @@ def resolution_tag_for_height(height: Optional[int]) -> Optional[tuple[str, str]
         if height >= threshold:
             return label, color
     return f"{height}p", "white"
+
+
+def _is_vod_channel(channel: Channel) -> bool:
+    """Return ``True`` if *channel* appears to be a VOD entry."""
+
+    url_lower = channel.url.lower()
+    if any(segment in url_lower for segment in ("/movie/", "/series/", "/catchup/")):
+        return True
+    type_attr = channel.raw_attributes.get("tvg-type")
+    if isinstance(type_attr, str) and type_attr.strip().lower() in {"movie", "series", "vod"}:
+        return True
+    group = channel.group or ""
+    if group and _VOD_GROUP_PATTERN.search(group):
+        return True
+    return False
 
 
 @dataclass
@@ -969,6 +988,11 @@ class ProviderForm(Static):
         yield Input(placeholder="Username", id="provider-username")
         yield Label("Xtream Codes password")
         yield Input(placeholder="Password", id="provider-password")
+        yield Checkbox(
+            "Include video on demand (VOD)",
+            id="provider-vod",
+            value=True,
+        )
 
     def populate(self, provider: ProviderConfig) -> None:
         self.query_one("#provider-name", Input).value = provider.name
@@ -985,6 +1009,7 @@ class ProviderForm(Static):
         self.query_one("#provider-server", Input).value = base or ""
         self.query_one("#provider-username", Input).value = username or ""
         self.query_one("#provider-password", Input).value = password or ""
+        self.query_one("#provider-vod", Checkbox).value = provider.enable_vod
 
     def read(self) -> ProviderConfig:
         name = self.query_one("#provider-name", Input).value.strip()
@@ -1003,6 +1028,7 @@ class ProviderForm(Static):
             xtream_base_url=xtream_base,
             xtream_username=xtream_username,
             xtream_password=xtream_password,
+            enable_vod=self.query_one("#provider-vod", Checkbox).value,
         )
 
     def clear(self) -> None:
@@ -1010,6 +1036,7 @@ class ProviderForm(Static):
         self.query_one("#provider-server", Input).value = ""
         self.query_one("#provider-username", Input).value = ""
         self.query_one("#provider-password", Input).value = ""
+        self.query_one("#provider-vod", Checkbox).value = True
 
     def focus_name(self) -> None:
         self.query_one("#provider-name", Input).focus()
@@ -2370,6 +2397,14 @@ class StreamdeckApp(App[None]):
             return
         if state is None:
             state = self._current_state()
+            if (
+                (state is None or not state.loading)
+                and self._current_provider_index is not None
+                and 0 <= self._current_provider_index < len(self._states)
+            ):
+                candidate = self._states[self._current_provider_index]
+                if candidate.loading:
+                    state = candidate
         if state is None or not state.loading:
             widget.hide()
             return
@@ -2981,14 +3016,26 @@ class StreamdeckApp(App[None]):
     def _handle_channels_loaded(self, state: ProviderState, channels: List[Channel]) -> None:
         state.loading = False
         state.last_error = None
-        state.channels = channels
+        filtered_channels = channels
+        if not state.config.enable_vod:
+            filtered_channels = [
+                channel for channel in channels if not _is_vod_channel(channel)
+            ]
+            removed = len(channels) - len(filtered_channels)
+            if removed:
+                log.info(
+                    "Excluded %d VOD channel(s) for provider %s",
+                    removed,
+                    state.config.name,
+                )
+        state.channels = filtered_channels
         if state.search_index is not None:
             state.search_index.close()
-        state.search_index = build_search_index(channels)
+        state.search_index = build_search_index(state.channels)
         self._rebuild_all_channels()
         state.last_loaded_at = datetime.now(tz=timezone.utc)
         state.loading_progress = 1.0
-        state.last_channel_count = len(channels)
+        state.last_channel_count = len(state.channels)
         if state.loading_bytes_total is None:
             state.loading_bytes_total = state.loading_bytes_read
         timestamp = state.last_loaded_at.isoformat() if state.last_loaded_at else None
@@ -3000,7 +3047,7 @@ class StreamdeckApp(App[None]):
         save_config(self._config, self._config_path)
         log.info(
             "Loaded %d channels for provider %s",
-            len(channels),
+            len(state.channels),
             state.config.name,
         )
         if self._active_tab == "channels":
@@ -3011,7 +3058,7 @@ class StreamdeckApp(App[None]):
             self._apply_filter(query)
         if state is self._current_state():
             self._set_status(
-                f"Loaded {len(channels)} channels for {state.config.name}"
+                f"Loaded {len(state.channels)} channels for {state.config.name}"
             )
             self._hide_provider_form()
         self._refresh_provider_list()

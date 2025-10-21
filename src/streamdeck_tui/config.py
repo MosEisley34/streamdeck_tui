@@ -25,6 +25,7 @@ class ProviderConfig:
     xtream_base_url: Optional[str] = None
     xtream_username: Optional[str] = None
     xtream_password: Optional[str] = None
+    enable_vod: bool = True
 
 
 @dataclass(slots=True)
@@ -170,6 +171,20 @@ def _clean_scalar(value: str) -> str:
     return value
 
 
+def _parse_bool(value: object, *, default: bool = True) -> bool:
+    """Coerce *value* into a boolean flag."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "on", "1"}:
+            return True
+        if normalized in {"false", "no", "off", "0"}:
+            return False
+    return default
+
+
 def _parse_config(raw: str) -> dict[str, object]:
     if not raw.strip():
         return {}
@@ -230,6 +245,8 @@ def _dump_config(data: AppConfig) -> str:
                 lines.append("    xtream_password: " + provider.xtream_password)
             if provider.last_loaded_at:
                 lines.append("    last_loaded_at: " + provider.last_loaded_at)
+            if not provider.enable_vod:
+                lines.append("    enable_vod: false")
     else:
         lines.append("providers: []")
     if data.favorites:
@@ -327,6 +344,7 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
                     )
                 else:
                     last_loaded_at = candidate
+        enable_vod = _parse_bool(entry.get("enable_vod"), default=True)
         providers.append(
             ProviderConfig(
                 name=str(name),
@@ -336,6 +354,7 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
                 xtream_base_url=xtream_base,
                 xtream_username=xtream_username,
                 xtream_password=xtream_password,
+                enable_vod=enable_vod,
             )
         )
     for entry in favorites_raw:
