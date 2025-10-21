@@ -396,6 +396,59 @@ def test_provider_label_includes_channels_and_status(monkeypatch) -> None:
     assert loading_label.index("loading 50%") < loading_label.index("2 channels")
 
 
+def test_vod_channels_filtered_when_disabled(monkeypatch) -> None:
+    """Providers with VOD disabled should drop movie and series entries."""
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel
+
+    provider = ProviderConfig(
+        name="Demo",
+        playlist_url="http://example.com",
+        enable_vod=False,
+    )
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
+
+    monkeypatch.setattr(StreamdeckApp, "_refresh_provider_list", lambda self: None, raising=False)
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "_update_provider_progress_widget",
+        lambda self, state=None: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "_update_connection_usage_widget",
+        lambda self, state=None: None,
+        raising=False,
+    )
+    monkeypatch.setattr("streamdeck_tui.app.save_config", lambda config, path: None, raising=False)
+
+    app._active_index = None
+    state = app._states[0]
+    channels = [
+        Channel(name="Live", url="http://example.com/live/user/pass/1.ts", group="News"),
+        Channel(
+            name="Movie",
+            url="http://example.com/movie/user/pass/2.mkv",
+            group="English VOD",
+        ),
+        Channel(
+            name="Series",
+            url="http://example.com/series/user/pass/3.mkv",
+            group="Series",
+            raw_attributes={"tvg-type": "series"},
+        ),
+    ]
+
+    app._handle_channels_loaded(state, channels)
+
+    assert state.channels is not None
+    assert [channel.name for channel in state.channels] == ["Live"]
+    assert state.last_channel_count == 1
+
+
 def test_provider_last_channel_count_persists_after_error(monkeypatch) -> None:
     """The last successful channel count should survive load failures."""
 
