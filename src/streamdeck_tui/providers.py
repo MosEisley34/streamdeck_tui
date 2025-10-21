@@ -79,6 +79,9 @@ async def fetch_connection_status(url: str, *, timeout: float = 10.0) -> Connect
             # Some providers expose ``active_cons`` instead of ``active_connections``.
             active = payload.get("active_cons")
         maximum = payload.get("max_connections")
+        if maximum is None:
+            # Some providers expose ``max_cons`` instead of ``max_connections``.
+            maximum = payload.get("max_cons")
         coerced_active = _coerce_connection_count(active)
         coerced_maximum = _coerce_connection_count(maximum)
         if coerced_active is not None:
