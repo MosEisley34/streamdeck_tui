@@ -124,6 +124,57 @@ def build_xtream_urls(base_url: str, username: str, password: str) -> Tuple[str,
     return playlist, api
 
 
+def build_xtream_playlist_variants(
+    base_url: str, username: str, password: str
+) -> list[tuple[str, str, str, str, str, str]]:
+    """Return alternate Xtream playlist/API URL combinations for recovery attempts.
+
+    The returned list contains tuples of ``(playlist_url, api_url, base_url, type, output, scheme)``
+    ordered from most preferred to least preferred options.
+    """
+
+    normalized = _normalize_xtream_base_url(base_url)
+    user = quote_plus(username)
+    passwd = quote_plus(password)
+
+    base_candidates: list[str] = []
+    parsed = urlparse(normalized)
+    if parsed.scheme:
+        base_candidates.append(normalized)
+        if parsed.scheme == "http":
+            https_variant = urlunparse(parsed._replace(scheme="https"))
+            if https_variant:
+                base_candidates.append(https_variant.rstrip("/"))
+    else:
+        base_candidates.append(normalized)
+
+    playlist_params = [
+        ("m3u_plus", "ts"),
+        ("m3u_plus", "mpegts"),
+        ("m3u", "ts"),
+        ("m3u", "mpegts"),
+    ]
+
+    variants: list[tuple[str, str, str, str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for candidate_base in base_candidates:
+        stripped_base = candidate_base.rstrip("/")
+        parsed_candidate = urlparse(stripped_base)
+        scheme = parsed_candidate.scheme or parsed.scheme or "http"
+        for playlist_type, output in playlist_params:
+            playlist = (
+                f"{stripped_base}/get.php?username={user}&password={passwd}"
+                f"&type={playlist_type}&output={output}"
+            )
+            api = f"{stripped_base}/player_api.php?username={user}&password={passwd}"
+            signature = (playlist, api)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            variants.append((playlist, api, stripped_base, playlist_type, output, scheme))
+    return variants
+
+
 def extract_xtream_credentials(
     playlist_url: str,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -399,6 +450,9 @@ __all__ = [
     "ProviderConfig",
     "FavoriteChannel",
     "CONFIG_PATH",
+    "build_xtream_urls",
+    "build_xtream_playlist_variants",
+    "extract_xtream_credentials",
     "load_config",
     "save_config",
 ]

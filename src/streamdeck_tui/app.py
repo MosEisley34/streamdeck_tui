@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import groupby
 from typing import Any, Callable, Iterable, List, Optional, Sequence, cast
+from urllib.parse import parse_qs, urlparse
 
 try:
     from textual import events, on
@@ -64,6 +65,7 @@ from .config import (
     FavoriteChannel,
     ProviderConfig,
     CONFIG_PATH,
+    build_xtream_playlist_variants,
     build_xtream_urls,
     extract_xtream_credentials,
     save_config,
@@ -239,6 +241,19 @@ class ProviderState:
     loading_bytes_read: int = 0
     loading_bytes_total: Optional[int] = None
     last_channel_count: Optional[int] = None
+
+
+@dataclass(slots=True)
+class _PlaylistCandidate:
+    """Internal structure describing a playlist attempt."""
+
+    playlist_url: str
+    api_url: Optional[str]
+    base_url: Optional[str]
+    description: Optional[str] = None
+    type_param: Optional[str] = None
+    output_param: Optional[str] = None
+    scheme: Optional[str] = None
 
 
 def _parse_last_loaded_at(value: Optional[str], provider_name: str) -> Optional[datetime]:
@@ -1385,6 +1400,7 @@ class StreamdeckApp(App[None]):
         self._preferred_player: Optional[str] = (
             preferred_player if preferred_player is not None else PREFERRED_PLAYER_DEFAULT
         )
+        self._suppress_provider_autoload: bool = True
         log.debug("Inline stylesheet active (%d characters)", len(self.CSS))
         log.info(
             "StreamdeckApp initialized with %d provider(s); config path=%s",
@@ -1471,9 +1487,9 @@ class StreamdeckApp(App[None]):
         self._refresh_playing_channels_panel()
         self._ensure_playback_timer()
         self._update_playback_timer_state()
-        self._refresh_stale_providers()
         self._update_provider_form_visibility(self.provider_form_visible)
         self._refresh_footer_bindings()
+        self._suppress_provider_autoload = False
 
     def _focus_provider_list(self) -> None:
         provider_list = self._query_optional_widget("#provider-list", ListView)
@@ -2824,6 +2840,134 @@ class StreamdeckApp(App[None]):
         self._worker = None
         self._current_provider_index = None
 
+    @staticmethod
+    def _analyze_xtream_playlist(url: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return None, None, None
+        scheme = parsed.scheme or None
+        params = parse_qs(parsed.query)
+        type_param = params.get("type", [None])[0]
+        output_param = params.get("output", [None])[0]
+        return scheme, type_param, output_param
+
+    @staticmethod
+    def _describe_xtream_variant(
+        original_scheme: Optional[str],
+        original_type: Optional[str],
+        original_output: Optional[str],
+        new_scheme: Optional[str],
+        new_type: Optional[str],
+        new_output: Optional[str],
+    ) -> str:
+        changes: list[str] = []
+        if new_scheme and new_scheme != original_scheme:
+            if new_scheme == "https":
+                changes.append("Switching to HTTPS playlist")
+            elif new_scheme == "http":
+                changes.append("Switching to HTTP playlist")
+            else:
+                changes.append(f"Switching to {new_scheme.upper()} playlist")
+        if new_type and new_type != original_type:
+            normalized_type = new_type.lower()
+            if normalized_type == "m3u":
+                changes.append("Retrying with legacy Xtream playlist type")
+            elif normalized_type == "m3u_plus":
+                changes.append("Retrying with extended Xtream playlist type")
+            else:
+                changes.append(f"Retrying with type={new_type}")
+        if new_output and new_output != original_output:
+            normalized_output = new_output.lower()
+            if normalized_output == "ts":
+                label = "TS output"
+            elif normalized_output == "mpegts":
+                label = "MPEG-TS output"
+            else:
+                label = f"output={new_output}"
+            changes.append(f"Retrying with {label}")
+        if not changes:
+            return "Retrying playlist download"
+        if len(changes) == 1:
+            return changes[0]
+        return ", ".join(changes[:-1]) + f" and {changes[-1]}"
+
+    def _playlist_candidates_for_state(self, state: ProviderState) -> list[_PlaylistCandidate]:
+        playlist_url = state.config.playlist_url
+        api_url = state.config.api_url
+        base_url = state.config.xtream_base_url
+        original_scheme, original_type, original_output = self._analyze_xtream_playlist(
+            playlist_url
+        )
+        candidates = [
+            _PlaylistCandidate(
+                playlist_url=playlist_url,
+                api_url=api_url,
+                base_url=base_url,
+                type_param=original_type,
+                output_param=original_output,
+                scheme=original_scheme,
+            )
+        ]
+        base = state.config.xtream_base_url
+        username = state.config.xtream_username
+        password = state.config.xtream_password
+        if base and username and password:
+            try:
+                variants = build_xtream_playlist_variants(base, username, password)
+            except ValueError:
+                log.warning(
+                    "Invalid Xtream configuration for provider %s; skipping fallbacks",
+                    state.config.name,
+                )
+            else:
+                for (
+                    playlist_variant,
+                    api_variant,
+                    base_variant,
+                    type_variant,
+                    output_variant,
+                    scheme_variant,
+                ) in variants:
+                    if playlist_variant == playlist_url:
+                        continue
+                    description = self._describe_xtream_variant(
+                        original_scheme,
+                        original_type,
+                        original_output,
+                        scheme_variant,
+                        type_variant,
+                        output_variant,
+                    )
+                    candidates.append(
+                        _PlaylistCandidate(
+                            playlist_url=playlist_variant,
+                            api_url=api_variant,
+                            base_url=base_variant,
+                            description=description,
+                            type_param=type_variant,
+                            output_param=output_variant,
+                            scheme=scheme_variant,
+                        )
+                    )
+        return candidates
+
+    def _announce_playlist_retry(
+        self, state: ProviderState, candidate: _PlaylistCandidate
+    ) -> None:
+        state.loading_progress = 0.0
+        state.loading_bytes_read = 0
+        state.loading_bytes_total = None
+        self._update_provider_progress_widget(state)
+        message = candidate.description or "Retrying playlist download"
+        self._set_status(f"{message} for {state.config.name}…")
+        log.info(
+            "Retrying playlist download for %s via %s",
+            state.config.name,
+            candidate.playlist_url,
+        )
+        self._refresh_provider_list()
+
     def _queue_provider_load(self, index: int, *, force: bool = False) -> None:
         if not (0 <= index < len(self._states)):
             return
@@ -2958,20 +3102,76 @@ class StreamdeckApp(App[None]):
                     loaded,
                     total,
                 )
+            candidates = self._playlist_candidates_for_state(state)
+            last_error: Optional[Exception] = None
+            successful: Optional[tuple[_PlaylistCandidate, List[Channel]]] = None
 
-            channels = await asyncio.to_thread(
-                load_playlist,
-                state.config.playlist_url,
-                progress=progress_callback,
-            )
-        except Exception as exc:  # pragma: no cover - network failures depend on environment
-            log.exception("Error loading playlist for %s", state.config.name)
-            self._call_on_app_thread(self._handle_provider_error, state, str(exc))
-        else:
-            self._call_on_app_thread(self._handle_channels_loaded, state, channels)
-            if state.config.api_url:
+            for attempt, candidate in enumerate(candidates):
+                if attempt:
+                    self._call_on_app_thread(
+                        self._announce_playlist_retry, state, candidate
+                    )
                 try:
-                    status = await fetch_connection_status(state.config.api_url)
+                    log.info(
+                        "Attempting playlist download for %s via %s",
+                        state.config.name,
+                        candidate.playlist_url,
+                    )
+                    channels = await asyncio.to_thread(
+                        load_playlist,
+                        candidate.playlist_url,
+                        progress=progress_callback,
+                    )
+                except Exception as exc:  # pragma: no cover - network failures depend on environment
+                    last_error = exc
+                    log.warning(
+                        "Playlist attempt %d for %s failed: %s",
+                        attempt + 1,
+                        state.config.name,
+                        exc,
+                    )
+                    continue
+                else:
+                    successful = (candidate, channels)
+                    break
+
+            if successful is None:
+                message = str(last_error) if last_error else "Unknown error"
+                log.error(
+                    "Failed to load playlist for %s after %d attempt(s)",
+                    state.config.name,
+                    len(candidates),
+                    exc_info=last_error,
+                )
+                self._call_on_app_thread(self._handle_provider_error, state, message)
+                return
+
+            candidate, channels = successful
+
+            def apply_successful_candidate() -> None:
+                state.config.playlist_url = candidate.playlist_url
+                if candidate.api_url is not None:
+                    state.config.api_url = candidate.api_url
+                if candidate.base_url is not None:
+                    state.config.xtream_base_url = candidate.base_url
+                if candidate.description:
+                    self._set_status(
+                        f"{candidate.description} for {state.config.name} succeeded. "
+                        "Loading channels…"
+                    )
+
+            self._call_on_app_thread(apply_successful_candidate)
+            if candidate.description:
+                log.info(
+                    "Playlist recovery succeeded for %s via %s",
+                    state.config.name,
+                    candidate.playlist_url,
+                )
+            self._call_on_app_thread(self._handle_channels_loaded, state, channels)
+            api_url = state.config.api_url
+            if api_url:
+                try:
+                    status = await fetch_connection_status(api_url)
                 except Exception as exc:  # pragma: no cover - network failures depend on environment
                     log.exception("Error fetching status for %s", state.config.name)
                     self._call_on_app_thread(self._handle_status_error, state, str(exc))
@@ -3133,7 +3333,13 @@ class StreamdeckApp(App[None]):
         else:
             self._hide_provider_form()
         if state.channels is None:
-            self._load_provider(index)
+            if self._suppress_provider_autoload:
+                self._clear_channels("Press R to load channels")
+                self._set_status(
+                    f"{state.config.name} is selected. Press R to load channels."
+                )
+            else:
+                self._load_provider(index)
         else:
             self._apply_filter(self.query_one("#search", Input).value)
         self._refresh_provider_list()
