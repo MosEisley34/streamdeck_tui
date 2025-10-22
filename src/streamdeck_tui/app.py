@@ -38,6 +38,7 @@ try:
     from textual.timer import Timer
     from textual.worker import Worker
     from textual.screen import ModalScreen
+    from textual.widget import Widget
     from textual.widgets import (
         Checkbox,
         Footer,
@@ -94,6 +95,7 @@ log = get_logger(__name__)
 
 
 RECENT_RELOAD_THRESHOLD = timedelta(hours=6)
+MAX_PLAYLIST_ATTEMPTS = 5
 
 # Provider colours are generated dynamically to avoid collisions with other
 # semantic colours used throughout the UI (for example, resolution tags). The
@@ -1569,6 +1571,15 @@ class StreamdeckApp(App[None]):
         except Exception:
             return None
 
+    @staticmethod
+    def _widget_has_ancestor_id(widget: Optional[Widget], target_id: str) -> bool:
+        current: Any = widget
+        while current is not None:
+            if getattr(current, "id", None) == target_id:
+                return True
+            current = getattr(current, "parent", None)
+        return False
+
     def _current_state(self) -> Optional[ProviderState]:
         if self._active_index is None:
             return None
@@ -3009,6 +3020,14 @@ class StreamdeckApp(App[None]):
                             scheme=scheme_variant,
                         )
                     )
+        if len(candidates) > MAX_PLAYLIST_ATTEMPTS:
+            log.info(
+                "Limiting playlist attempts for %s to %d (requested %d)",
+                state.config.name,
+                MAX_PLAYLIST_ATTEMPTS,
+                len(candidates),
+            )
+            candidates = candidates[:MAX_PLAYLIST_ATTEMPTS]
         return candidates
 
     def _announce_playlist_retry(
@@ -3669,7 +3688,7 @@ class StreamdeckApp(App[None]):
             self._set_status("No active player to stop")
             return
         focused = self.focused
-        if getattr(focused, "id", None) == "playing-channels-list":
+        if self._widget_has_ancestor_id(focused, "playing-channels-list"):
             playing_entry = self._get_selected_playing_entry()
             if playing_entry is None:
                 self._set_status("Select a playing channel to stop")
