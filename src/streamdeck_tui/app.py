@@ -105,8 +105,27 @@ CONNECTION_STATUS_REFRESH_INTERVAL = 30.0
 PROVIDER_COLOR_SATURATION = 0.55
 PROVIDER_COLOR_LIGHTNESS = 0.5
 
-LIVE_BITRATE_COLOR = "bright_green"
-AVERAGE_BITRATE_COLOR = "bright_yellow"
+LIVE_BITRATE_DEFAULT_COLOR = "bright_green"
+AVERAGE_BITRATE_DEFAULT_COLOR = "bright_yellow"
+
+BITRATE_COLORS: tuple[str, ...] = (
+    "bright_green",
+    "green",
+    "yellow",
+    "orange1",
+    "red",
+)
+BITRATE_THRESHOLDS_BY_HEIGHT: tuple[tuple[int, tuple[int, int, int, int]], ...] = (
+    (2160, (18_000_000, 12_000_000, 8_000_000, 5_000_000)),
+    (1440, (12_000_000, 8_000_000, 5_500_000, 3_500_000)),
+    (1080, (7_000_000, 5_000_000, 3_000_000, 1_800_000)),
+    (720, (6_000_000, 5_000_000, 3_000_000, 1_500_000)),
+    (576, (3_500_000, 2_500_000, 1_500_000, 900_000)),
+    (480, (2_500_000, 1_800_000, 1_000_000, 600_000)),
+    (360, (1_500_000, 1_000_000, 600_000, 350_000)),
+)
+DEFAULT_BITRATE_THRESHOLDS = (2_000_000, 1_500_000, 1_000_000, 500_000)
+UNKNOWN_BITRATE_COLOR = "grey62"
 
 RESOLUTION_BUCKETS: tuple[tuple[int, str, str], ...] = (
     (2160, "2160p", "bright_magenta"),
@@ -203,6 +222,35 @@ def _format_bitrate(bitrate: Optional[float]) -> str:
     if bitrate >= 1_000:
         return f"{bitrate / 1_000:.1f} Kbps"
     return f"{bitrate:.0f} bps"
+
+
+def _bitrate_thresholds_for_height(height: Optional[int]) -> tuple[int, int, int, int]:
+    """Return bitrate thresholds appropriate for a given video height."""
+
+    if height is None or height <= 0:
+        return DEFAULT_BITRATE_THRESHOLDS
+    for threshold, buckets in BITRATE_THRESHOLDS_BY_HEIGHT:
+        if height >= threshold:
+            return buckets
+    return DEFAULT_BITRATE_THRESHOLDS
+
+
+def _bitrate_color(
+    bitrate: Optional[float],
+    height: Optional[int],
+    default_color: str,
+) -> str:
+    """Return a colour representing the quality of ``bitrate`` for ``height``."""
+
+    if bitrate is None or bitrate <= 0:
+        return UNKNOWN_BITRATE_COLOR
+    if height is None or height <= 0:
+        return default_color
+    thresholds = _bitrate_thresholds_for_height(height)
+    for threshold, color in zip(thresholds, BITRATE_COLORS[:-1]):
+        if bitrate >= threshold:
+            return color
+    return BITRATE_COLORS[-1]
 
 
 def resolution_tag_for_height(height: Optional[int]) -> Optional[tuple[str, str]]:
@@ -741,8 +789,8 @@ class PlayingChannelInfo(_ChannelSummary):
             return None
         live = _format_bitrate(stats.live_bitrate)
         average = _format_bitrate(stats.average_bitrate)
-        live_markup = f"[{LIVE_BITRATE_COLOR}]Live {live}[/]"
-        average_markup = f"[{AVERAGE_BITRATE_COLOR}]Avg {average}[/]"
+        live_markup = f"[{_bitrate_color(stats.live_bitrate, stats.height, LIVE_BITRATE_DEFAULT_COLOR)}]Live {live}[/]"
+        average_markup = f"[{_bitrate_color(stats.average_bitrate, stats.height, AVERAGE_BITRATE_DEFAULT_COLOR)}]Avg {average}[/]"
         return f"Bitrate: {live_markup} • {average_markup}"
 
 
@@ -1764,8 +1812,8 @@ class StreamdeckApp(App[None]):
             return None
         live = _format_bitrate(stats.live_bitrate)
         average = _format_bitrate(stats.average_bitrate)
-        live_markup = f"[{LIVE_BITRATE_COLOR}]Live {live}[/]"
-        average_markup = f"[{AVERAGE_BITRATE_COLOR}]Avg {average}[/]"
+        live_markup = f"[{_bitrate_color(stats.live_bitrate, stats.height, LIVE_BITRATE_DEFAULT_COLOR)}]Live {live}[/]"
+        average_markup = f"[{_bitrate_color(stats.average_bitrate, stats.height, AVERAGE_BITRATE_DEFAULT_COLOR)}]Avg {average}[/]"
         return f"Bitrate: {live_markup} • {average_markup}"
 
     def _format_stream_stats(self, stats: StreamStats) -> list[str]:
