@@ -108,7 +108,18 @@ def _normalize_xtream_base_url(base_url: str) -> str:
     base = base_url.strip()
     if not base:
         raise ValueError("Xtream base URL cannot be empty")
-    return base.rstrip("/")
+    # Allow users to omit the scheme in the provider form. Default to HTTPS so we
+    # attempt a secure connection first, but still make room for HTTP fallbacks
+    # when we generate variant URLs later.
+    if "://" not in base:
+        base = f"https://{base}"
+
+    parsed = urlparse(base)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError("Xtream base URL must include a network location")
+
+    normalized = urlunparse(parsed._replace(path=parsed.path.rstrip("/")))
+    return normalized.rstrip("/")
 
 
 def build_xtream_urls(base_url: str, username: str, password: str) -> Tuple[str, str]:
@@ -133,7 +144,9 @@ def build_xtream_playlist_variants(
     ordered from most preferred to least preferred options.
     """
 
-    normalized = _normalize_xtream_base_url(base_url)
+    stripped_input = base_url.strip()
+    normalized = _normalize_xtream_base_url(stripped_input)
+    missing_scheme = "://" not in stripped_input
     user = quote_plus(username)
     passwd = quote_plus(password)
 
@@ -147,6 +160,13 @@ def build_xtream_playlist_variants(
                 base_candidates.append(https_variant.rstrip("/"))
     else:
         base_candidates.append(normalized)
+
+    if missing_scheme:
+        http_variant = urlunparse(parsed._replace(scheme="http"))
+        if http_variant:
+            http_variant = http_variant.rstrip("/")
+            if http_variant not in base_candidates:
+                base_candidates.append(http_variant)
 
     playlist_params = [
         ("m3u_plus", "ts"),

@@ -145,6 +145,19 @@ def test_build_xtream_playlist_variants_includes_scheme_and_formats() -> None:
     assert any("output=mpegts" in url for url in playlists)
 
 
+def test_build_xtream_urls_defaults_to_https_when_scheme_missing() -> None:
+    playlist, api = build_xtream_urls("portal.example.com", "user", "pass")
+    assert playlist.startswith("https://portal.example.com/")
+    assert api.startswith("https://portal.example.com/")
+
+
+def test_build_xtream_variants_without_scheme_adds_http_fallback() -> None:
+    variants = build_xtream_playlist_variants("portal.example.com", "user", "pass")
+    playlists = {playlist for playlist, *_ in variants}
+    assert any(url.startswith("https://portal.example.com/") for url in playlists)
+    assert any(url.startswith("http://portal.example.com/") for url in playlists)
+
+
 def test_save_config_persists_xtream_fields(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     playlist, api = build_xtream_urls("https://portal.example.com", "user", "pass")
