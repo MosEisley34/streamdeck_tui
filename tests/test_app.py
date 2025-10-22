@@ -413,7 +413,7 @@ def test_load_provider_skips_recent_refresh(monkeypatch) -> None:
 def test_playlist_candidates_include_xtream_variants() -> None:
     """Xtream providers should expose HTTPS and legacy playlist fallbacks."""
 
-    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.app import MAX_PLAYLIST_ATTEMPTS, StreamdeckApp
     from streamdeck_tui.config import AppConfig, ProviderConfig, build_xtream_urls
 
     playlist, api = build_xtream_urls("http://portal.example.com", "user", "pass")
@@ -431,6 +431,7 @@ def test_playlist_candidates_include_xtream_variants() -> None:
     candidates = app._playlist_candidates_for_state(state)
 
     assert candidates[0].playlist_url == playlist
+    assert len(candidates) <= MAX_PLAYLIST_ATTEMPTS
     assert any(candidate.scheme == "https" for candidate in candidates[1:])
     assert any(candidate.type_param == "m3u" for candidate in candidates[1:])
 
@@ -1153,6 +1154,54 @@ def test_action_stop_channel_targets_selected_playing_entry(monkeypatch) -> None
     )
 
     focused_widget = SimpleNamespace(id="playing-channels-list")
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "focused",
+        property(lambda self: focused_widget),
+        raising=False,
+    )
+
+    stopped: list[list[tuple[str, str]]] = []
+
+    def capture_stop(self, keys):
+        stopped.append(list(keys))
+
+    monkeypatch.setattr(
+        StreamdeckApp, "_stop_channels", capture_stop, raising=False
+    )
+
+    app.action_stop_channel()
+
+    assert stopped == [[key]]
+
+
+def test_action_stop_channel_handles_child_focus(monkeypatch) -> None:
+    from streamdeck_tui.app import PlayingChannelsPanel, StreamdeckApp
+    from streamdeck_tui.config import AppConfig
+    from streamdeck_tui.playlist import Channel
+
+    app = StreamdeckApp(AppConfig())
+    channel = Channel(name="Demo", url="http://example.com/demo")
+    key = ("Provider", channel.url)
+    app._playing_channels[key] = ("Provider", channel)
+    app._player_handles[key] = object()
+
+    panel = DummyPlayingPanel(selected_key=key)
+
+    def fake_query_optional_widget(self, query, widget_type=None):
+        if query is PlayingChannelsPanel:
+            return panel
+        return None
+
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "_query_optional_widget",
+        fake_query_optional_widget,
+        raising=False,
+    )
+
+    parent = SimpleNamespace(id="playing-channels-list", parent=None)
+    focused_widget = SimpleNamespace(id=None, parent=parent)
     monkeypatch.setattr(
         StreamdeckApp,
         "focused",
