@@ -3,7 +3,8 @@
 import asyncio
 import importlib.util
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Iterable, Optional
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,6 +32,24 @@ class DummyLogger:
 
     def exception(self, *args, **kwargs) -> None:  # pragma: no cover - unused in tests
         pass
+
+
+class DummyPlayingPanel:
+    """Minimal stub for PlayingChannelsPanel interactions."""
+
+    def __init__(self, selected_key: Optional[tuple[str, str]] = None) -> None:
+        self._selected_key = selected_key
+        self.entries: list[str] | None = None
+        self.keys: list[tuple[str, str]] | None = None
+
+    def update_entries(
+        self, entries: Iterable[str], keys: Iterable[tuple[str, str]]
+    ) -> None:
+        self.entries = list(entries)
+        self.keys = list(keys)
+
+    def get_selected_key(self) -> Optional[tuple[str, str]]:
+        return self._selected_key
 
 
 def test_custom_themes_registered() -> None:
@@ -1052,6 +1071,107 @@ def test_stop_all_playback_stops_everything(monkeypatch) -> None:
     assert stopped == [(active_key, True)]
 
 
+def test_refresh_playing_panel_sorts_by_average_bitrate(monkeypatch) -> None:
+    from streamdeck_tui.app import PlayingChannelsPanel, StreamdeckApp
+    from streamdeck_tui.config import AppConfig
+    from streamdeck_tui.playlist import Channel
+    from streamdeck_tui.stats import StreamStats
+
+    app = StreamdeckApp(AppConfig())
+
+    fast_channel = Channel(name="Fast", url="http://example.com/fast")
+    slow_channel = Channel(name="Slow", url="http://example.com/slow")
+    fast_key = ("Provider B", fast_channel.url)
+    slow_key = ("Provider A", slow_channel.url)
+
+    app._playing_channels[fast_key] = ("Provider B", fast_channel)
+    app._playing_channels[slow_key] = ("Provider A", slow_channel)
+    app._latest_stats[fast_key] = StreamStats(
+        live_bitrate=2_500_000, average_bitrate=4_000_000
+    )
+    app._latest_stats[slow_key] = StreamStats(
+        live_bitrate=1_500_000, average_bitrate=2_000_000
+    )
+    app._playback_started_at[fast_key] = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    app._playback_started_at[slow_key] = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+    panel = DummyPlayingPanel()
+
+    def fake_query_optional_widget(self, query, widget_type=None):
+        if query is PlayingChannelsPanel:
+            return panel
+        return None
+
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "_query_optional_widget",
+        fake_query_optional_widget,
+        raising=False,
+    )
+
+    refreshed: list[bool] = []
+
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "_refresh_selected_channels_panel",
+        lambda self: refreshed.append(True),
+        raising=False,
+    )
+
+    app._refresh_playing_channels_panel()
+
+    assert panel.keys == [fast_key, slow_key]
+    assert panel.entries is not None
+    assert any("[bright_cyan]Live" in entry for entry in panel.entries)
+    assert any("[bright_magenta]Avg" in entry for entry in panel.entries)
+    assert refreshed
+
+
+def test_action_stop_channel_targets_selected_playing_entry(monkeypatch) -> None:
+    from streamdeck_tui.app import PlayingChannelsPanel, StreamdeckApp
+    from streamdeck_tui.config import AppConfig
+    from streamdeck_tui.playlist import Channel
+
+    app = StreamdeckApp(AppConfig())
+    channel = Channel(name="Demo", url="http://example.com/demo")
+    key = ("Provider", channel.url)
+    app._playing_channels[key] = ("Provider", channel)
+    app._player_handles[key] = object()
+
+    panel = DummyPlayingPanel(selected_key=key)
+
+    def fake_query_optional_widget(self, query, widget_type=None):
+        if query is PlayingChannelsPanel:
+            return panel
+        return None
+
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "_query_optional_widget",
+        fake_query_optional_widget,
+        raising=False,
+    )
+
+    focused_widget = SimpleNamespace(id="playing-channels-list")
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "focused",
+        property(lambda self: focused_widget),
+        raising=False,
+    )
+
+    stopped: list[list[tuple[str, str]]] = []
+
+    def capture_stop(self, keys):
+        stopped.append(list(keys))
+
+    monkeypatch.setattr(
+        StreamdeckApp, "_stop_channels", capture_stop, raising=False
+    )
+
+    app.action_stop_channel()
+
+    assert stopped == [[key]]
 
 
 def test_search_down_arrow_focuses_channel_list() -> None:

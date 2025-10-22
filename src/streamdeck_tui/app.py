@@ -102,6 +102,9 @@ RECENT_RELOAD_THRESHOLD = timedelta(hours=6)
 PROVIDER_COLOR_SATURATION = 0.55
 PROVIDER_COLOR_LIGHTNESS = 0.5
 
+LIVE_BITRATE_COLOR = "bright_cyan"
+AVERAGE_BITRATE_COLOR = "bright_magenta"
+
 RESOLUTION_BUCKETS: tuple[tuple[int, str, str], ...] = (
     (2160, "2160p", "bright_magenta"),
     (1440, "1440p", "magenta"),
@@ -575,7 +578,9 @@ class PlayingChannelsPanel(Vertical):
             self._list_view.index = current_index
         self._selected_index = current_index
         self._list_view.display = True
-        self._footer_widget.update("Press [b]m[/] to manage playback.")
+        self._footer_widget.update(
+            "Press [b]s[/] to stop a stream or [b]Ctrl+Shift+S[/] to stop all."
+        )
 
     def on_list_view_highlighted(
         self, event: ListView.Highlighted
@@ -733,7 +738,9 @@ class PlayingChannelInfo(_ChannelSummary):
             return None
         live = _format_bitrate(stats.live_bitrate)
         average = _format_bitrate(stats.average_bitrate)
-        return f"Bitrate: Live {live} • Avg {average}"
+        live_markup = f"[{LIVE_BITRATE_COLOR}]Live {live}[/]"
+        average_markup = f"[{AVERAGE_BITRATE_COLOR}]Avg {average}[/]"
+        return f"Bitrate: {live_markup} • {average_markup}"
 
 
 
@@ -1682,7 +1689,9 @@ class StreamdeckApp(App[None]):
             return None
         live = _format_bitrate(stats.live_bitrate)
         average = _format_bitrate(stats.average_bitrate)
-        return f"Bitrate: Live {live} • Avg {average}"
+        live_markup = f"[{LIVE_BITRATE_COLOR}]Live {live}[/]"
+        average_markup = f"[{AVERAGE_BITRATE_COLOR}]Avg {average}[/]"
+        return f"Bitrate: {live_markup} • {average_markup}"
 
     def _format_stream_stats(self, stats: StreamStats) -> list[str]:
         lines: list[str] = []
@@ -1718,15 +1727,65 @@ class StreamdeckApp(App[None]):
             return
         entries: list[str] = []
         keys: list[tuple[str, str]] = []
+        playing_items: list[
+            tuple[
+                float,
+                float,
+                str,
+                str,
+                tuple[str, str],
+                str,
+                Channel,
+                Optional[StreamStats],
+                Optional[datetime],
+            ]
+        ] = []
         for key, (provider_name, channel) in self._playing_channels.items():
+            stats = self._latest_stats.get(key)
+            average_sort = (
+                stats.average_bitrate
+                if stats is not None and stats.average_bitrate is not None
+                else -1.0
+            )
+            started_at = self._playback_started_at.get(key)
+            started_sort = started_at.timestamp() if started_at is not None else -1.0
+            playing_items.append(
+                (
+                    average_sort,
+                    started_sort,
+                    provider_name.lower(),
+                    channel.name.lower(),
+                    key,
+                    provider_name,
+                    channel,
+                    stats,
+                    started_at,
+                )
+            )
+
+        playing_items.sort(
+            key=lambda item: (item[0], item[1], item[2], item[3]),
+            reverse=True,
+        )
+
+        for (
+            _avg,
+            _started,
+            _provider_key,
+            _channel_key,
+            key,
+            provider_name,
+            channel,
+            stats,
+            started_at,
+        ) in playing_items:
             provider_markup = self._provider_markup(provider_name)
             parts = [provider_markup, escape(channel.name)]
             if channel.group:
                 parts.append(f"Group: {escape(channel.group)}")
-            elapsed = self._format_playback_elapsed(self._playback_started_at.get(key))
+            elapsed = self._format_playback_elapsed(started_at)
             if elapsed:
                 parts.append(f"Elapsed: {elapsed}")
-            stats = self._latest_stats.get(key)
             if stats is not None:
                 parts.extend(self._format_stream_stats(stats))
             entries.append(" • ".join(parts))
