@@ -1261,6 +1261,12 @@ class StreamdeckApp(App[None]):
             tabs={"channels"},
         ),
         tab_binding(
+            "u",
+            "unselect_all_channels",
+            "Unselect all",
+            tabs={"channels"},
+        ),
+        tab_binding(
             "s",
             "stop_channel",
             "Stop selected",
@@ -3323,7 +3329,31 @@ class StreamdeckApp(App[None]):
             log.info("Queued %s (%s) for playback", channel.name, provider_name)
         self._refresh_selected_channels_panel()
 
+    def action_unselect_all_channels(self) -> None:
+        if not self._require_active_tab(
+            "channels", "Switch to the Channels tab to manage selections"
+        ):
+            return
+        if not self._queued_channels:
+            self._set_status("No channels are currently selected")
+            return
+        keys = list(self._queued_channels)
+        self._queue_remove_many(keys)
+        self._refresh_channel_queue_indicators()
+        self._refresh_selected_channels_panel()
+        count = len(keys)
+        message = f"Unselected {count} channel{'s' if count != 1 else ''}"
+        self._set_status(message)
+        log.info(message)
+
     def action_play_channel(self) -> None:
+        provider_name, channel, _ = self._get_selected_entry()
+        if provider_name is not None and channel is not None:
+            key = self._channel_queue_key(provider_name, channel)
+            if key not in self._queued_channels:
+                self._set_status(f"Launching player for {channel.name}…")
+                self._start_player_for_channel(provider_name, channel)
+                return
         if self._queued_channels:
             launched = 0
             missing_keys: list[tuple[str, str]] = []
@@ -3362,15 +3392,9 @@ class StreamdeckApp(App[None]):
             else:
                 self._set_status("No queued channels available for playback")
             return
-        provider_name, channel, _ = self._get_selected_entry()
         if provider_name is None or channel is None:
             self._set_status("No channel selected")
             return
-        key = self._channel_queue_key(provider_name, channel)
-        if key in self._queued_channels:
-            self._queue_remove(key)
-            self._update_channel_item_queue_state(provider_name, channel, False)
-            self._refresh_selected_channels_panel()
         self._set_status(f"Launching player for {channel.name}…")
         self._start_player_for_channel(provider_name, channel)
 
