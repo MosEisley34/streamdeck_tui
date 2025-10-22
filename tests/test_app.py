@@ -117,6 +117,45 @@ def test_provider_form_hidden_until_new_action() -> None:
     asyncio.run(run_app())
 
 
+def test_providers_do_not_auto_reload_on_start(monkeypatch) -> None:
+    """Providers should wait for an explicit reload after the UI mounts."""
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+
+    provider = ProviderConfig(name="Test", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
+
+    load_calls: list[tuple[int, bool]] = []
+
+    def fake_load(self, index: int, *, force: bool = False) -> None:
+        load_calls.append((index, force))
+
+    messages: list[str] = []
+
+    def fake_clear(self, message: str = "No provider selected") -> None:
+        messages.append(message)
+
+    statuses: list[str] = []
+
+    def capture_status(self, message: str) -> None:
+        statuses.append(message)
+
+    monkeypatch.setattr(StreamdeckApp, "_load_provider", fake_load, raising=False)
+    monkeypatch.setattr(StreamdeckApp, "_clear_channels", fake_clear, raising=False)
+    monkeypatch.setattr(StreamdeckApp, "_set_status", capture_status, raising=False)
+
+    async def run_app() -> None:
+        async with app.run_test():
+            await asyncio.sleep(0)
+
+    asyncio.run(run_app())
+
+    assert not load_calls
+    assert messages and messages[-1] == "Press R to load channels"
+    assert any("Press R to load channels" in status for status in statuses)
+
+
 def test_action_quit_closes_app() -> None:
     """The quit action should stop the application without errors."""
 
@@ -350,6 +389,31 @@ def test_load_provider_skips_recent_refresh(monkeypatch) -> None:
     assert any(
         "Skipping automatic reload" in message for message in dummy_logger.messages
     )
+
+
+def test_playlist_candidates_include_xtream_variants() -> None:
+    """Xtream providers should expose HTTPS and legacy playlist fallbacks."""
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig, build_xtream_urls
+
+    playlist, api = build_xtream_urls("http://portal.example.com", "user", "pass")
+    provider = ProviderConfig(
+        name="Xtream",
+        playlist_url=playlist,
+        api_url=api,
+        xtream_base_url="http://portal.example.com",
+        xtream_username="user",
+        xtream_password="pass",
+    )
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
+    state = app._states[0]
+
+    candidates = app._playlist_candidates_for_state(state)
+
+    assert candidates[0].playlist_url == playlist
+    assert any(candidate.scheme == "https" for candidate in candidates[1:])
+    assert any(candidate.type_param == "m3u" for candidate in candidates[1:])
 
 
 def test_provider_label_includes_channels_and_status(monkeypatch) -> None:

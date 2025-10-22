@@ -4,6 +4,7 @@ from streamdeck_tui.config import (
     AppConfig,
     FavoriteChannel,
     ProviderConfig,
+    build_xtream_playlist_variants,
     build_xtream_urls,
     extract_xtream_credentials,
     load_config,
@@ -131,6 +132,17 @@ providers:
     assert provider.xtream_base_url == "https://portal.example.com:8080/sub"
     assert provider.xtream_username == "demo user"
     assert provider.xtream_password == "secret pass"
+
+
+def test_build_xtream_playlist_variants_includes_scheme_and_formats() -> None:
+    variants = build_xtream_playlist_variants(
+        "http://portal.example.com", "user", "pass"
+    )
+    playlists = {playlist for playlist, *_ in variants}
+    assert any(url.startswith("http://") for url in playlists)
+    assert any(url.startswith("https://") for url in playlists)
+    assert any("type=m3u" in url for url in playlists)
+    assert any("output=mpegts" in url for url in playlists)
 
 
 def test_save_config_persists_xtream_fields(tmp_path: Path) -> None:
