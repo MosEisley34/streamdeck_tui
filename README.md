@@ -87,6 +87,12 @@ Launch the TUI with:
 streamdeck-tui
 ```
 
+Display the installed version without launching the interface:
+
+```bash
+streamdeck-tui --version  # or streamdeck-tui -V
+```
+
 > **Important:** If you have run `pip install streamdeck-tui` previously, the
 > `streamdeck-tui` command may still point at that older installation. Always run
 > `make install` (or `pip install -e .`) after cloning so the console entry point

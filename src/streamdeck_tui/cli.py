@@ -6,6 +6,7 @@ import importlib.resources as resources
 from pathlib import Path
 from typing import Iterable
 
+from . import __version__
 from .app import StreamdeckApp
 from .config import CONFIG_PATH, load_config
 from .logging_utils import configure_logging, get_logger
@@ -52,6 +53,13 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
             "Select the application theme. Available options include "
             "'solarized-dark' and 'solarized-light'."
         ),
+    )
+    parser.add_argument(
+        "--version",
+        "-V",
+        action="version",
+        version=__version__,
+        help="Show the installed streamdeck_tui version and exit",
     )
     return parser.parse_args(argv)
 
