@@ -96,6 +96,7 @@ log = get_logger(__name__)
 
 RECENT_RELOAD_THRESHOLD = timedelta(hours=6)
 MAX_PLAYLIST_ATTEMPTS = 5
+CONNECTION_STATUS_REFRESH_INTERVAL = 30.0
 
 # Provider colours are generated dynamically to avoid collisions with other
 # semantic colours used throughout the UI (for example, resolution tags). The
@@ -104,8 +105,8 @@ MAX_PLAYLIST_ATTEMPTS = 5
 PROVIDER_COLOR_SATURATION = 0.55
 PROVIDER_COLOR_LIGHTNESS = 0.5
 
-LIVE_BITRATE_COLOR = "bright_cyan"
-AVERAGE_BITRATE_COLOR = "bright_magenta"
+LIVE_BITRATE_COLOR = "bright_green"
+AVERAGE_BITRATE_COLOR = "bright_yellow"
 
 RESOLUTION_BUCKETS: tuple[tuple[int, str, str], ...] = (
     (2160, "2160p", "bright_magenta"),
@@ -1393,6 +1394,8 @@ class StreamdeckApp(App[None]):
         self._provider_load_queue: deque[tuple[int, bool]] = deque()
         self._playback_timer: Optional[Timer] = None
         self._playback_timer_active: bool = False
+        self._connection_status_timer: Optional[Timer] = None
+        self._connection_status_task: Optional[asyncio.Task[None]] = None
         self._current_provider_index: Optional[int] = None
         self._app_thread_id: int = threading.get_ident()
         self._log_viewer: Optional[LogViewer] = None
@@ -1496,6 +1499,8 @@ class StreamdeckApp(App[None]):
         self._refresh_playing_channels_panel()
         self._ensure_playback_timer()
         self._update_playback_timer_state()
+        self._ensure_connection_status_timer()
+        self._launch_connection_status_refresh()
         self._update_provider_form_visibility(self.provider_form_visible)
         self._refresh_footer_bindings()
         self._suppress_provider_autoload = False
@@ -1679,6 +1684,65 @@ class StreamdeckApp(App[None]):
             self._refresh_selected_channels_panel()
             return
         panel.update_entries(entries)
+
+    def _ensure_connection_status_timer(self) -> None:
+        if self._connection_status_timer is None:
+            self._connection_status_timer = self.set_interval(
+                CONNECTION_STATUS_REFRESH_INTERVAL,
+                self._on_connection_status_timer_tick,
+            )
+
+    def _on_connection_status_timer_tick(self) -> None:
+        self._launch_connection_status_refresh()
+
+    def _launch_connection_status_refresh(self) -> None:
+        task = self._connection_status_task
+        if task is not None and not task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        task = loop.create_task(self._refresh_connection_statuses())
+        task.add_done_callback(self._on_connection_status_task_complete)
+        self._connection_status_task = task
+
+    def _on_connection_status_task_complete(
+        self, task: asyncio.Task[None]
+    ) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception("Error refreshing connection status")
+        finally:
+            if self._connection_status_task is task:
+                self._connection_status_task = None
+
+    async def _refresh_connection_statuses(self) -> None:
+        states = [
+            state
+            for state in self._states
+            if state.config.api_url and not state.loading
+        ]
+        if not states:
+            return
+
+        async def refresh_state(state: ProviderState) -> None:
+            api_url = state.config.api_url
+            if not api_url:
+                return
+            try:
+                status = await fetch_connection_status(api_url)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover - network failures depend on environment
+                self._call_on_app_thread(self._handle_status_error, state, str(exc))
+            else:
+                self._call_on_app_thread(self._handle_status_success, state, status)
+
+        await asyncio.gather(*(refresh_state(state) for state in states))
 
     def _format_stream_resolution(self, stats: StreamStats) -> Optional[str]:
         if stats.height is None and stats.width is None:

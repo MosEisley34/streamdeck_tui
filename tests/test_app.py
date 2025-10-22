@@ -1123,8 +1123,8 @@ def test_refresh_playing_panel_sorts_by_average_bitrate(monkeypatch) -> None:
 
     assert panel.keys == [fast_key, slow_key]
     assert panel.entries is not None
-    assert any("[bright_cyan]Live" in entry for entry in panel.entries)
-    assert any("[bright_magenta]Avg" in entry for entry in panel.entries)
+    assert any("[bright_green]Live" in entry for entry in panel.entries)
+    assert any("[bright_yellow]Avg" in entry for entry in panel.entries)
     assert refreshed
 
 
