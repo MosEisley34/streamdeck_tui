@@ -62,7 +62,8 @@ python app.py
 Both forms ensure the package-relative imports resolve correctly before launching the UI.
 
 Use `streamdeck-tui --help` (or the module equivalent) for runtime flags such as `--config` to point to a different configuration
-file. Run `pytest` to execute the test suite.
+file. The `--theme` option documents the currently bundled themes directly in the help text, and you can discover the same list at
+runtime with `streamdeck-tui --list-themes`. Run `pytest` to execute the test suite.
 
 ## Configuration
 
