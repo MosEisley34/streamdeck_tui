@@ -435,10 +435,18 @@ class SelectedChannelListItem(ListItem):
     """Render a queued channel summary inside the selected list."""
 
     def __init__(self, summary: str) -> None:
-        super().__init__(
-            Static(summary, markup=True, classes="selected-channel-entry")
-        )
+        self._summary = summary
+        self._content = Static(summary, markup=True, classes="selected-channel-entry")
+        super().__init__(self._content)
         self.can_focus = False
+
+    def update_summary(self, summary: str) -> None:
+        """Update the rendered summary while preserving widget instance."""
+
+        if self._summary == summary:
+            return
+        self._summary = summary
+        self._content.update(summary)
 
 
 class SelectedChannelsPanel(Vertical):
@@ -486,14 +494,28 @@ class SelectedChannelsPanel(Vertical):
         total = len(self.entries)
         title = "Selected channels" if total == 0 else f"Selected channels ({total})"
         self._title_widget.update(f"[b]{title}[/]")
-        self._list_view.clear()
         if total == 0:
+            for child in list(self._list_view.children):
+                child.remove()
             self._list_view.display = False
             self._footer_widget.update(self._empty_message)
             return
         display_entries = self.entries[: self._soft_limit]
-        for summary in display_entries:
-            self._list_view.append(SelectedChannelListItem(summary))
+        existing_items = [
+            child
+            for child in self._list_view.children
+            if isinstance(child, SelectedChannelListItem)
+        ]
+        for item in existing_items[len(display_entries) :]:
+            item.remove()
+        existing_items = existing_items[: len(display_entries)]
+        for idx, summary in enumerate(display_entries):
+            if idx < len(existing_items):
+                item = existing_items[idx]
+                item.update_summary(summary)
+            else:
+                item = SelectedChannelListItem(summary)
+                self._list_view.append(item)
         self._list_view.display = True
         remaining = total - len(display_entries)
         if remaining > 0:
