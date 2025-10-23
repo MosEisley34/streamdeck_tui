@@ -11,8 +11,15 @@ from .app import StreamdeckApp
 from .config import CONFIG_PATH, load_config
 from .logging_utils import configure_logging, get_logger
 from .player import PREFERRED_PLAYER_DEFAULT
+from .themes import CUSTOM_THEMES
 
 log = get_logger(__name__)
+
+
+def _sorted_theme_names() -> list[str]:
+    """Return the bundled theme catalog in a consistent order."""
+
+    return sorted(CUSTOM_THEMES)
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -46,26 +53,29 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
             " falls back to auto-detect)"
         ),
     )
+    theme_names = ", ".join(_sorted_theme_names())
     parser.add_argument(
         "--theme",
         default=None,
         help=(
-            "Select the application theme. Available options include "
-            "'solarized-dark' and 'solarized-light'."
+            "Select the application theme. Available options: "
+            f"{theme_names}."
         ),
     )
     parser.add_argument(
-        "--version",
-        "-V",
-        action="version",
-        version=__version__,
-        help="Show the installed streamdeck_tui version and exit",
+        "--list-themes",
+        action="store_true",
+        help="List available themes and exit.",
     )
     return parser.parse_args(argv)
 
 
 def main(argv: Iterable[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.list_themes:
+        for theme_name in _sorted_theme_names():
+            print(theme_name)
+        return
     configure_logging(
         level=args.log_level,
         log_file=str(args.log_file) if args.log_file is not None else None,
