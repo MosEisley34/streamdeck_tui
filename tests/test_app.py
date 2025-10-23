@@ -63,6 +63,15 @@ def test_custom_themes_registered() -> None:
     assert app.theme == "solarized-dark"
 
 
+def test_config_theme_used_when_provided() -> None:
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig
+
+    app = StreamdeckApp(AppConfig(theme="solarized-light"))
+
+    assert app.theme == "solarized-light"
+
+
 def test_search_input_allows_editing_keys_without_forwarding() -> None:
     """Editing keys should remain within the input widget for processing."""
 

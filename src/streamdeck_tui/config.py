@@ -34,6 +34,7 @@ class AppConfig:
 
     providers: list[ProviderConfig] = field(default_factory=list)
     favorites: list["FavoriteChannel"] = field(default_factory=list)
+    theme: Optional[str] = None
 
     def add_or_update(self, provider: ProviderConfig) -> None:
         """Insert or update a provider configuration by name."""
@@ -301,6 +302,8 @@ def _parse_config(raw: str) -> dict[str, object]:
 
 def _dump_config(data: AppConfig) -> str:
     lines: list[str] = []
+    if data.theme:
+        lines.append(f"theme: {data.theme}")
     if data.providers:
         lines.append("providers:")
         for provider in data.providers:
@@ -348,8 +351,14 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     data = _parse_config(raw)
     providers_raw = data.get("providers", []) if isinstance(data, dict) else []
     favorites_raw = data.get("favorites", []) if isinstance(data, dict) else []
+    theme_raw = data.get("theme") if isinstance(data, dict) else None
     providers: list[ProviderConfig] = []
     favorites: list[FavoriteChannel] = []
+    theme: Optional[str] = None
+    if isinstance(theme_raw, str):
+        candidate = theme_raw.strip()
+        if candidate:
+            theme = candidate
     for entry in providers_raw:
         if not isinstance(entry, dict):  # pragma: no cover - invalid config guard
             continue
@@ -452,7 +461,7 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         len(favorites),
         config_path,
     )
-    return AppConfig(providers=providers, favorites=favorites)
+    return AppConfig(providers=providers, favorites=favorites, theme=theme)
 
 
 def save_config(config: AppConfig, path: Optional[Path] = None) -> None:
