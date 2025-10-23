@@ -1405,7 +1405,8 @@ class StreamdeckApp(App[None]):
     ) -> None:
         super().__init__()
         self._register_custom_themes()
-        self._apply_requested_theme(theme)
+        requested_theme = theme if theme is not None else config.theme
+        self._apply_requested_theme(requested_theme)
         self._config = config
         self._config_path = config_path or CONFIG_PATH
         self._states: list[ProviderState] = []

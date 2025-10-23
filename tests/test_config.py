@@ -16,6 +16,7 @@ def test_load_config_returns_empty_when_missing(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config = load_config(config_path)
     assert config.providers == []
+    assert config.theme is None
 
 
 def test_load_and_save_round_trip(tmp_path: Path) -> None:
@@ -33,9 +34,12 @@ def test_load_and_save_round_trip(tmp_path: Path) -> None:
                 name="Provider B",
                 playlist_url="https://example.com/b.m3u",
             ),
-        ]
+        ],
+        theme="solarized-light",
     )
     save_config(config, config_path)
+    raw = config_path.read_text()
+    assert "theme: solarized-light" in raw.splitlines()[0]
     loaded = load_config(config_path)
     assert [provider.name for provider in loaded.providers] == ["Provider A", "Provider B"]
     assert loaded.providers[0].api_url == "https://example.com/a/status"
@@ -45,6 +49,7 @@ def test_load_and_save_round_trip(tmp_path: Path) -> None:
     assert not loaded.providers[0].enable_vod
     assert loaded.providers[1].enable_vod
     assert loaded.favorites == []
+    assert loaded.theme == "solarized-light"
 
 
 def test_round_trip_with_favorites(tmp_path: Path) -> None:

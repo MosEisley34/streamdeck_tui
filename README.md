@@ -80,6 +80,18 @@ providers:
 Each provider entry requires a unique `name` and `playlist_url`. The optional `api_url` should return JSON containing
 `active_connections` and `max_connections` keys to populate the provider status line.
 
+Add a top-level `theme` entry to persist a preferred appearance across launches. Valid values include
+`solarized-dark` (the default) and `solarized-light`.
+
+```yaml
+theme: solarized-light
+providers:
+  - name: Example IPTV
+    playlist_url: YOUR_PLAYLIST_URL
+```
+
+The `--theme` CLI argument continues to override the configuration for a single run.
+
 ## Usage
 
 Launch the TUI with:
