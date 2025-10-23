@@ -15,6 +15,12 @@ from .themes import CUSTOM_THEMES
 log = get_logger(__name__)
 
 
+def _sorted_theme_names() -> list[str]:
+    """Return the bundled theme catalog in a consistent order."""
+
+    return sorted(CUSTOM_THEMES)
+
+
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Streamdeck IPTV management TUI")
     parser.add_argument(
@@ -46,7 +52,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
             " falls back to auto-detect)"
         ),
     )
-    theme_names = ", ".join(sorted(CUSTOM_THEMES))
+    theme_names = ", ".join(_sorted_theme_names())
     parser.add_argument(
         "--theme",
         default=None,
@@ -66,7 +72,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 def main(argv: Iterable[str] | None = None) -> None:
     args = parse_args(argv)
     if args.list_themes:
-        for theme_name in sorted(CUSTOM_THEMES):
+        for theme_name in _sorted_theme_names():
             print(theme_name)
         return
     configure_logging(
