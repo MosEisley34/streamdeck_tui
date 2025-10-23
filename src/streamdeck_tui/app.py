@@ -517,6 +517,14 @@ class PlayingChannelListItem(ListItem):
         self._selected = False
         self._refresh_content()
 
+    def update_summary(self, summary: str) -> None:
+        """Update the rendered summary while preserving selection state."""
+
+        if self._summary == summary:
+            return
+        self._summary = summary
+        self._refresh_content()
+
     def set_selected(self, selected: bool) -> None:
         """Update the visual indicator for selection."""
 
@@ -607,8 +615,9 @@ class PlayingChannelsPanel(Vertical):
         total = len(self.entries)
         title = "Now playing" if total == 0 else f"Now playing ({total})"
         self._title_widget.update(f"[b]{title}[/]")
-        self._list_view.clear()
         if total == 0:
+            for child in list(self._list_view.children):
+                child.remove()
             self._list_view.display = False
             self._footer_widget.update("No streams are currently playing.")
             self._selected_index = None
@@ -621,10 +630,23 @@ class PlayingChannelsPanel(Vertical):
             current_index = 0
         if current_index is not None:
             current_index = max(0, min(total - 1, current_index))
+        existing_items = [
+            child
+            for child in self._list_view.children
+            if isinstance(child, PlayingChannelListItem)
+        ]
+        # Remove any extra items if the number of entries shrank.
+        for item in existing_items[total:]:
+            item.remove()
+        existing_items = existing_items[:total]
         for idx, summary in enumerate(self.entries):
-            item = PlayingChannelListItem(summary)
+            if idx < len(existing_items):
+                item = existing_items[idx]
+                item.update_summary(summary)
+            else:
+                item = PlayingChannelListItem(summary)
+                self._list_view.append(item)
             item.set_selected(idx == current_index)
-            self._list_view.append(item)
         if current_index is not None:
             self._list_view.index = current_index
         self._selected_index = current_index
