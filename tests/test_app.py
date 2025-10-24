@@ -184,6 +184,32 @@ def test_providers_do_not_auto_reload_on_start(monkeypatch) -> None:
     assert any("Press R to load channels" in status for status in statuses)
 
 
+def test_cached_channels_loaded_on_startup(tmp_path, monkeypatch) -> None:
+    """Cached channels should be restored before the UI renders."""
+
+    from streamdeck_tui import database
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel
+
+    monkeypatch.setattr(database, "CHANNEL_DATABASE_PATH", tmp_path / "channels.sqlite")
+    provider = ProviderConfig(name="Cached", playlist_url="http://example.com")
+    channel = Channel(
+        name="Cached Channel",
+        url="http://example.com/cached",
+        group="News",
+        logo=None,
+        raw_attributes={"tvg-id": "cached"},
+    )
+    database.save_channels(provider.name, [channel])
+
+    app = StreamdeckApp(AppConfig(providers=[provider]))
+
+    assert app._states
+    assert app._states[0].channels is not None
+    assert app._states[0].channels[0].name == "Cached Channel"
+
+
 def test_action_quit_closes_app() -> None:
     """The quit action should stop the application without errors."""
 

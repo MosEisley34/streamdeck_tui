@@ -71,6 +71,12 @@ from .config import (
     extract_xtream_credentials,
     save_config,
 )
+from .database import (
+    clear_channel_database,
+    load_all_channels,
+    remove_provider_channels,
+    save_channels,
+)
 from .logging_utils import configure_logging, get_logger
 from .playlist import (
     Channel,
@@ -1370,6 +1376,18 @@ class StreamdeckApp(App[None]):
         ),
         tab_binding("delete", "delete_provider", "Delete provider", tabs={"providers"}),
         tab_binding("r", "reload_provider", "Reload provider", tabs={"providers"}),
+        tab_binding(
+            "ctrl+shift+r",
+            "reload_all_providers",
+            "Reload all",
+            tabs={"providers"},
+        ),
+        tab_binding(
+            "ctrl+shift+c",
+            "clear_database",
+            "Clear database",
+            tabs={"providers"},
+        ),
         tab_binding("p", "play_channel", "Play", tabs={"channels", "favorites"}),
         tab_binding(
             "space",
@@ -1512,6 +1530,7 @@ class StreamdeckApp(App[None]):
             len(self._states),
             self._config_path,
         )
+        self._load_cached_channels()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1528,7 +1547,8 @@ class StreamdeckApp(App[None]):
                             "Add or remove providers below. Changes are saved to "
                             f"config.yaml ({self._config_destination_label()}). "
                             "Keyboard shortcuts: N to add, Delete to remove, "
-                            "S to save, Ctrl+R to reset the form, R to reload."
+                            "S to save, Ctrl+R to reset the form, R to reload, "
+                            "Ctrl+Shift+R to reload all, Ctrl+Shift+C to clear the database."
                         ),
                         id="providers-help",
                     )
@@ -1562,6 +1582,36 @@ class StreamdeckApp(App[None]):
                     yield LogViewer(id="log-viewer")
         yield StatusBar(id="status")
         yield TabAwareFooter(id="app-footer")
+
+    def _load_cached_channels(self) -> None:
+        if not self._states:
+            return
+        try:
+            cached = load_all_channels()
+        except Exception:
+            log.exception("Failed to load cached channel database")
+            return
+        if not cached:
+            log.debug("No cached channels found on startup")
+            return
+        provider_count = 0
+        total_channels = 0
+        for state in self._states:
+            channels = cached.get(state.config.name)
+            if not channels:
+                continue
+            state.channels = channels
+            state.search_index = build_search_index(channels)
+            state.last_channel_count = len(channels)
+            provider_count += 1
+            total_channels += len(channels)
+        if total_channels:
+            self._rebuild_all_channels()
+            log.info(
+                "Loaded %d cached channel(s) across %d provider(s)",
+                total_channels,
+                provider_count,
+            )
 
     def on_mount(self) -> None:
         log.debug("Application mounted")
@@ -3473,6 +3523,10 @@ class StreamdeckApp(App[None]):
         if state.search_index is not None:
             state.search_index.close()
         state.search_index = build_search_index(state.channels)
+        try:
+            save_channels(state.config.name, state.channels)
+        except Exception:
+            log.exception("Failed to persist channels for %s", state.config.name)
         self._rebuild_all_channels()
         state.last_loaded_at = datetime.now(tz=timezone.utc)
         state.loading_progress = 1.0
@@ -3920,9 +3974,17 @@ class StreamdeckApp(App[None]):
             self._refresh_channel_queue_indicators()
             self._refresh_selected_channels_panel()
         self._config.remove(state.config.name)
+        try:
+            remove_provider_channels(state.config.name)
+        except Exception:
+            log.exception(
+                "Failed to remove cached channels for deleted provider %s",
+                state.config.name,
+            )
         self._save_current_config()
         log.warning("Deleted provider %s", state.config.name)
         location = self._config_destination_label()
+        self._rebuild_all_channels()
         if self._states:
             self._active_index = min(self._active_index, len(self._states) - 1)
             self._editing_name = self._states[self._active_index].config.name
@@ -3942,6 +4004,44 @@ class StreamdeckApp(App[None]):
             self._show_provider_form()
             self.query_one(ProviderForm).clear()
             self.query_one(ProviderForm).focus_name()
+
+    def action_reload_all_providers(self) -> None:
+        if not self._require_active_tab(
+            "providers", self._PROVIDERS_TAB_REQUIRED_STATUS
+        ):
+            return
+        if not self._states:
+            self._set_status("No providers configured")
+            return
+        for index in range(len(self._states)):
+            self._queue_provider_load(index, force=True)
+        log.info("Reloading all providers (%d total)", len(self._states))
+        self._set_status("Reloading all providers…")
+
+    def action_clear_database(self) -> None:
+        if not self._require_active_tab(
+            "providers", self._PROVIDERS_TAB_REQUIRED_STATUS
+        ):
+            return
+        try:
+            clear_channel_database()
+        except Exception:
+            log.exception("Failed to clear channel database")
+            self._set_status("Failed to clear channel database")
+            return
+        for state in self._states:
+            if state.search_index is not None:
+                state.search_index.close()
+            state.search_index = None
+            state.channels = None
+            state.last_channel_count = None
+        self._rebuild_all_channels()
+        self._clear_channels("Channels not loaded")
+        self._refresh_provider_list()
+        self._set_status(
+            "Cleared channel database. Reload providers to fetch channels."
+        )
+        log.info("Channel database cleared at user request")
 
     def action_reload_provider(self) -> None:
         if not self._require_active_tab(
