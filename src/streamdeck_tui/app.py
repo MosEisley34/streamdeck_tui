@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 from collections import defaultdict, deque
 from contextlib import nullcontext
+from contextlib import AbstractContextManager
 from pathlib import Path
 import re
 
@@ -216,6 +217,15 @@ async def _invoke_parent_on_key(
             if inspect.isawaitable(result):
                 await result
             return
+
+
+def _batch_update(widget: Widget) -> AbstractContextManager[Any]:
+    """Return a context manager batching updates for ``widget`` if possible."""
+
+    app = getattr(widget, "app", None)
+    if app is not None and hasattr(app, "batch_update"):
+        return app.batch_update()
+    return nullcontext()
 
 
 def _format_bitrate(bitrate: Optional[float]) -> str:
@@ -501,28 +511,30 @@ class SelectedChannelsPanel(Vertical):
         title = "Selected channels" if total == 0 else f"Selected channels ({total})"
         self._title_widget.update(f"[b]{title}[/]")
         if total == 0:
-            for child in list(self._list_view.children):
-                child.remove()
-            self._list_view.display = False
+            with _batch_update(self._list_view):
+                for child in list(self._list_view.children):
+                    child.remove()
+                self._list_view.display = False
             self._footer_widget.update(self._empty_message)
             return
         display_entries = self.entries[: self._soft_limit]
-        existing_items = [
-            child
-            for child in self._list_view.children
-            if isinstance(child, SelectedChannelListItem)
-        ]
-        for item in existing_items[len(display_entries) :]:
-            item.remove()
-        existing_items = existing_items[: len(display_entries)]
-        for idx, summary in enumerate(display_entries):
-            if idx < len(existing_items):
-                item = existing_items[idx]
-                item.update_summary(summary)
-            else:
-                item = SelectedChannelListItem(summary)
-                self._list_view.append(item)
-        self._list_view.display = True
+        with _batch_update(self._list_view):
+            existing_items = [
+                child
+                for child in self._list_view.children
+                if isinstance(child, SelectedChannelListItem)
+            ]
+            for item in existing_items[len(display_entries) :]:
+                item.remove()
+            existing_items = existing_items[: len(display_entries)]
+            for idx, summary in enumerate(display_entries):
+                if idx < len(existing_items):
+                    item = existing_items[idx]
+                    item.update_summary(summary)
+                else:
+                    item = SelectedChannelListItem(summary)
+                    self._list_view.append(item)
+            self._list_view.display = True
         remaining = total - len(display_entries)
         if remaining > 0:
             self._footer_widget.update(
@@ -644,9 +656,10 @@ class PlayingChannelsPanel(Vertical):
         title = "Now playing" if total == 0 else f"Now playing ({total})"
         self._title_widget.update(f"[b]{title}[/]")
         if total == 0:
-            for child in list(self._list_view.children):
-                child.remove()
-            self._list_view.display = False
+            with _batch_update(self._list_view):
+                for child in list(self._list_view.children):
+                    child.remove()
+                self._list_view.display = False
             self._footer_widget.update("No streams are currently playing.")
             self._selected_index = None
             self._list_view.index = None
@@ -658,27 +671,28 @@ class PlayingChannelsPanel(Vertical):
             current_index = 0
         if current_index is not None:
             current_index = max(0, min(total - 1, current_index))
-        existing_items = [
-            child
-            for child in self._list_view.children
-            if isinstance(child, PlayingChannelListItem)
-        ]
-        # Remove any extra items if the number of entries shrank.
-        for item in existing_items[total:]:
-            item.remove()
-        existing_items = existing_items[:total]
-        for idx, summary in enumerate(self.entries):
-            if idx < len(existing_items):
-                item = existing_items[idx]
-                item.update_summary(summary)
-            else:
-                item = PlayingChannelListItem(summary)
-                self._list_view.append(item)
-            item.set_selected(idx == current_index)
-        if current_index is not None:
-            self._list_view.index = current_index
+        with _batch_update(self._list_view):
+            existing_items = [
+                child
+                for child in self._list_view.children
+                if isinstance(child, PlayingChannelListItem)
+            ]
+            # Remove any extra items if the number of entries shrank.
+            for item in existing_items[total:]:
+                item.remove()
+            existing_items = existing_items[:total]
+            for idx, summary in enumerate(self.entries):
+                if idx < len(existing_items):
+                    item = existing_items[idx]
+                    item.update_summary(summary)
+                else:
+                    item = PlayingChannelListItem(summary)
+                    self._list_view.append(item)
+                item.set_selected(idx == current_index)
+            if current_index is not None:
+                self._list_view.index = current_index
+            self._list_view.display = True
         self._selected_index = current_index
-        self._list_view.display = True
         self._footer_widget.update(
             "Press [b]s[/] to stop a stream or [b]Ctrl+Shift+S[/] to stop all."
         )
@@ -2339,14 +2353,18 @@ class StreamdeckApp(App[None]):
             list_view = self.query_one("#favorites-list", ListView)
         except Exception:  # pragma: no cover - defensive for tests without UI
             return
-        list_view.clear()
+        with _batch_update(list_view):
+            list_view.clear()
+            if not self._favorite_entries:
+                list_view.append(ListItem(Label("No favorite channels saved")))
+                list_view.index = None
+            else:
+                for favorite in self._favorite_entries:
+                    list_view.append(FavoriteListItem(favorite))
+                list_view.index = 0
         if not self._favorite_entries:
-            list_view.append(ListItem(Label("No favorite channels saved")))
             self._clear_active_channel_info()
             return
-        for favorite in self._favorite_entries:
-            list_view.append(FavoriteListItem(favorite))
-        list_view.index = 0
         first = self._favorite_entries[0]
         self._update_active_channel_info(
             self._favorite_to_channel(first), first.provider
@@ -2672,18 +2690,25 @@ class StreamdeckApp(App[None]):
         log.debug("Refreshing provider list UI")
         list_view = self.query_one("#provider-list", ListView)
         previous_index = list_view.index
-        list_view.clear()
-        for state in self._states:
-            list_view.append(ListItem(Label(self._provider_label(state), markup=True)))
-        if self._states:
-            if self._active_index is not None:
-                list_view.index = max(0, min(self._active_index, len(self._states) - 1))
-            elif previous_index is not None:
-                list_view.index = max(0, min(previous_index, len(self._states) - 1))
+        with _batch_update(list_view):
+            list_view.clear()
+            for state in self._states:
+                list_view.append(
+                    ListItem(Label(self._provider_label(state), markup=True))
+                )
+            if self._states:
+                if self._active_index is not None:
+                    list_view.index = max(
+                        0, min(self._active_index, len(self._states) - 1)
+                    )
+                elif previous_index is not None:
+                    list_view.index = max(
+                        0, min(previous_index, len(self._states) - 1)
+                    )
+                else:
+                    list_view.index = 0
             else:
-                list_view.index = 0
-        else:
-            list_view.index = None
+                list_view.index = None
         self._update_provider_progress_widget()
         self._update_connection_usage_widget()
         self._update_connection_strip()
@@ -2779,9 +2804,10 @@ class StreamdeckApp(App[None]):
             )
             return
         list_view = self.query_one("#channel-list", ListView)
-        list_view.clear()
-        list_view.append(ListItem(Label(message)))
-        list_view.index = 0
+        with _batch_update(list_view):
+            list_view.clear()
+            list_view.append(ListItem(Label(message)))
+            list_view.index = 0
 
     def _apply_filter(self, query: str) -> None:
         log.debug("Applying channel filter: %s", query)
@@ -2810,9 +2836,10 @@ class StreamdeckApp(App[None]):
                 else:
                     message = "Channels not loaded"
                 list_view = self.query_one("#channel-list", ListView)
-                list_view.clear()
-                list_view.append(ListItem(Label(message)))
-                list_view.index = 0
+                with _batch_update(list_view):
+                    list_view.clear()
+                    list_view.append(ListItem(Label(message)))
+                    list_view.index = 0
                 self._clear_active_channel_info()
                 self._set_status(message)
             else:
@@ -2851,10 +2878,11 @@ class StreamdeckApp(App[None]):
                 return
             if not filtered:
                 list_view = self.query_one("#channel-list", ListView)
-                list_view.clear()
-                list_view.append(ListItem(Label("No channels found")))
+                with _batch_update(list_view):
+                    list_view.clear()
+                    list_view.append(ListItem(Label("No channels found")))
+                    list_view.index = 0
                 self._clear_active_channel_info()
-                list_view.index = 0
             else:
                 self._start_channel_render(filtered)
         provider_count = len(providers_in_result)
@@ -3002,8 +3030,9 @@ class StreamdeckApp(App[None]):
                         lambda: self._render_channel_window_for_start(0, selected_global_index=None)
                     )
                 return
-            list_view.clear()
-            list_view.index = None
+            with _batch_update(list_view):
+                list_view.clear()
+                list_view.index = None
             self._clear_active_channel_info()
             return
         max_start = max(0, total - self.CHANNEL_WINDOW_SIZE)
@@ -3024,12 +3053,7 @@ class StreamdeckApp(App[None]):
 
         def render_window() -> None:
             channels_slice = self.filtered_channels[start:end]
-            batch_context = (
-                list_view.batch_update()
-                if hasattr(list_view, "batch_update")
-                else nullcontext()
-            )
-            with batch_context:
+            with _batch_update(list_view):
                 list_view.clear()
                 for entry in channels_slice:
                     if (
