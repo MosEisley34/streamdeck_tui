@@ -311,6 +311,7 @@ class ProviderState:
     loading_bytes_read: int = 0
     loading_bytes_total: Optional[int] = None
     last_channel_count: Optional[int] = None
+    channel_delta: Optional[int] = None
 
 
 @dataclass(slots=True)
@@ -1624,6 +1625,7 @@ class StreamdeckApp(App[None]):
             state.channels = channels
             state.search_index = build_search_index(channels)
             state.last_channel_count = len(channels)
+            state.channel_delta = None
             provider_count += 1
             total_channels += len(channels)
         if total_channels:
@@ -2675,7 +2677,10 @@ class StreamdeckApp(App[None]):
             add_detail(f"error: {state.last_error}")
 
         if state.last_channel_count is not None:
-            add_detail(f"{state.last_channel_count} channels")
+            count_detail = f"{state.last_channel_count} channels"
+            if state.channel_delta is not None:
+                count_detail = f"{count_detail} ({state.channel_delta:+d})"
+            add_detail(count_detail)
         elif state.channels is not None:
             add_detail(f"{len(state.channels)} channels")
 
@@ -3543,6 +3548,7 @@ class StreamdeckApp(App[None]):
     def _handle_channels_loaded(self, state: ProviderState, channels: List[Channel]) -> None:
         state.loading = False
         state.last_error = None
+        previous_count = state.last_channel_count
         filtered_channels = channels
         if not state.config.enable_vod:
             filtered_channels = [
@@ -3566,7 +3572,11 @@ class StreamdeckApp(App[None]):
         self._rebuild_all_channels()
         state.last_loaded_at = datetime.now(tz=timezone.utc)
         state.loading_progress = 1.0
-        state.last_channel_count = len(state.channels)
+        new_count = len(state.channels)
+        state.channel_delta = (
+            None if previous_count is None else new_count - previous_count
+        )
+        state.last_channel_count = new_count
         if state.loading_bytes_total is None:
             state.loading_bytes_total = state.loading_bytes_read
         timestamp = state.last_loaded_at.isoformat() if state.last_loaded_at else None
@@ -4071,6 +4081,7 @@ class StreamdeckApp(App[None]):
             state.search_index = None
             state.channels = None
             state.last_channel_count = None
+            state.channel_delta = None
         self._rebuild_all_channels()
         self._clear_channels("Channels not loaded")
         self._refresh_provider_list()
