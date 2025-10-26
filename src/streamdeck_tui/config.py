@@ -152,23 +152,25 @@ def build_xtream_playlist_variants(
     user = quote_plus(username)
     passwd = quote_plus(password)
 
-    base_candidates: list[str] = []
     parsed = urlparse(normalized)
-    if parsed.scheme:
-        base_candidates.append(normalized)
-        if parsed.scheme == "http":
-            https_variant = urlunparse(parsed._replace(scheme="https"))
-            if https_variant:
-                base_candidates.append(https_variant.rstrip("/"))
-    else:
-        base_candidates.append(normalized)
 
-    if missing_scheme:
+    def _append_candidate(url: str, collection: list[str]) -> None:
+        candidate = url.rstrip("/")
+        if candidate and candidate not in collection:
+            collection.append(candidate)
+
+    base_candidates: list[str] = []
+    _append_candidate(normalized, base_candidates)
+
+    if parsed.scheme in {"http", "https"}:
+        alternate_scheme = "https" if parsed.scheme == "http" else "http"
+        alt_variant = urlunparse(parsed._replace(scheme=alternate_scheme))
+        if alt_variant:
+            _append_candidate(alt_variant, base_candidates)
+    elif missing_scheme:
         http_variant = urlunparse(parsed._replace(scheme="http"))
         if http_variant:
-            http_variant = http_variant.rstrip("/")
-            if http_variant not in base_candidates:
-                base_candidates.append(http_variant)
+            _append_candidate(http_variant, base_candidates)
 
     playlist_params = [
         ("m3u_plus", "ts"),
