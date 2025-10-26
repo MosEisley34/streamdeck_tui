@@ -11,6 +11,7 @@ from streamdeck_tui.playlist import (
     filter_channels,
     normalize_tokens,
     parse_playlist,
+    load_playlist,
 )
 
 
@@ -141,3 +142,46 @@ def test_parse_playlist_recovers_from_unterminated_attribute(monkeypatch):
         == 'http://logo2 tvg-name=Channel Two"'
     )
     assert "tvg-name" not in second_channel.raw_attributes
+
+
+def test_load_playlist_uses_custom_user_agent(monkeypatch):
+    playlist_bytes = """#EXTM3U
+#EXTINF:-1,Example
+http://stream.example/1
+""".encode("utf8")
+
+    class DummyResponse:
+        def __init__(self) -> None:
+            self._buffer = playlist_bytes
+            self._offset = 0
+            self.headers = {"Content-Length": str(len(self._buffer))}
+            self.length = len(self._buffer)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size: int) -> bytes:
+            if self._offset >= len(self._buffer):
+                return b""
+            chunk = self._buffer[self._offset : self._offset + size]
+            self._offset += len(chunk)
+            return chunk
+
+    captured: dict[str, str | None] = {}
+
+    def fake_urlopen(req, timeout: float = 0.0):  # pragma: no cover - network shim
+        captured["timeout"] = timeout
+        captured["user_agent"] = req.get_header("User-agent")
+        return DummyResponse()
+
+    monkeypatch.setattr("streamdeck_tui.playlist.request.urlopen", fake_urlopen)
+
+    channels = load_playlist(
+        "https://example.com/playlist.m3u",
+        user_agent="Streamdeck/3.0",
+    )
+    assert [channel.name for channel in channels] == ["Example"]
+    assert captured["user_agent"] == "Streamdeck/3.0"

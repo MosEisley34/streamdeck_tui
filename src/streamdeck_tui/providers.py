@@ -55,20 +55,29 @@ class ConnectionStatus:
         return self.message or "No status"
 
 
-def _fetch_status(url: str, timeout: float) -> dict[str, object]:
+def _fetch_status(
+    url: str, timeout: float, *, user_agent: Optional[str] = None
+) -> dict[str, object]:
     log.debug("Fetching provider status from %s (timeout=%s)", url, timeout)
-    with request.urlopen(url, timeout=timeout) as response:  # type: ignore[call-arg]
+    req = request.Request(url)
+    if user_agent:
+        req.add_header("User-Agent", user_agent)
+    with request.urlopen(req, timeout=timeout) as response:  # type: ignore[call-arg]
         payload = response.read().decode("utf8")
     log.debug("Received status payload: %s", payload)
     return json.loads(payload)
 
 
-async def fetch_connection_status(url: str, *, timeout: float = 10.0) -> ConnectionStatus:
+async def fetch_connection_status(
+    url: str, *, timeout: float = 10.0, user_agent: Optional[str] = None
+) -> ConnectionStatus:
     """Fetch connection status JSON from ``url`` asynchronously."""
 
     log.info("Requesting connection status from %s", url)
     try:
-        payload = await asyncio.to_thread(_fetch_status, url, timeout)
+        payload = await asyncio.to_thread(
+            _fetch_status, url, timeout, user_agent=user_agent
+        )
     except (error.URLError, json.JSONDecodeError) as exc:  # pragma: no cover - network errors
         log.error("Failed to fetch status from %s: %s", url, exc)
         raise RuntimeError(str(exc)) from exc

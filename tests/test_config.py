@@ -28,6 +28,7 @@ def test_load_and_save_round_trip(tmp_path: Path) -> None:
                 playlist_url="https://example.com/a.m3u",
                 api_url="https://example.com/a/status",
                 last_loaded_at="2024-01-01T00:00:00+00:00",
+                user_agent="Streamdeck/1.0",
                 enable_vod=False,
             ),
             ProviderConfig(
@@ -47,6 +48,8 @@ def test_load_and_save_round_trip(tmp_path: Path) -> None:
     assert loaded.providers[0].last_loaded_at == "2024-01-01T00:00:00+00:00"
     assert loaded.providers[1].last_loaded_at is None
     assert not loaded.providers[0].enable_vod
+    assert loaded.providers[0].user_agent == "Streamdeck/1.0"
+    assert loaded.providers[1].user_agent is None
     assert loaded.providers[1].enable_vod
     assert loaded.favorites == []
     assert loaded.theme == "solarized-light"
@@ -175,6 +178,7 @@ def test_save_config_persists_xtream_fields(tmp_path: Path) -> None:
                 xtream_base_url="https://portal.example.com",
                 xtream_username="user",
                 xtream_password="pass",
+                user_agent="Streamdeck/2.0",
                 enable_vod=False,
             )
         ]
@@ -184,12 +188,14 @@ def test_save_config_persists_xtream_fields(tmp_path: Path) -> None:
     assert "xtream_base_url: https://portal.example.com" in raw
     assert "xtream_username: user" in raw
     assert "xtream_password: pass" in raw
+    assert "user_agent: Streamdeck/2.0" in raw
     assert "enable_vod: false" in raw
     reloaded = load_config(config_path)
     assert reloaded.providers[0].xtream_base_url == "https://portal.example.com"
     assert reloaded.providers[0].xtream_username == "user"
     assert reloaded.providers[0].xtream_password == "pass"
     assert not reloaded.providers[0].enable_vod
+    assert reloaded.providers[0].user_agent == "Streamdeck/2.0"
 
 
 def test_extract_xtream_credentials_from_playlist() -> None:

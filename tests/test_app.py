@@ -879,7 +879,7 @@ def test_fetch_provider_success_on_app_thread(monkeypatch) -> None:
         raising=False,
     )
 
-    async def fake_status(_: str) -> ConnectionStatus:
+    async def fake_status(_: str, **__: object) -> ConnectionStatus:
         return ConnectionStatus(message="OK")
 
     monkeypatch.setattr(app_module, "fetch_connection_status", fake_status, raising=False)

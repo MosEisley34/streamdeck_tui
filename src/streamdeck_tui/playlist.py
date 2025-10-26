@@ -276,6 +276,7 @@ def load_playlist(
     source: str | Path,
     *,
     progress: Optional[Callable[[int, Optional[int]], None]] = None,
+    user_agent: Optional[str] = None,
 ) -> List[Channel]:
     """Load and parse a playlist from a local path or URL."""
 
@@ -293,7 +294,10 @@ def load_playlist(
     data = bytearray()
 
     if source_str.startswith(("http://", "https://")):
-        with request.urlopen(source_str, timeout=30.0) as response:
+        req = request.Request(source_str)
+        if user_agent:
+            req.add_header("User-Agent", user_agent)
+        with request.urlopen(req, timeout=30.0) as response:
             total = getattr(response, "length", None)
             if total is None:
                 length_header = response.headers.get("Content-Length")

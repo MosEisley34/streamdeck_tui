@@ -25,6 +25,7 @@ class ProviderConfig:
     xtream_base_url: Optional[str] = None
     xtream_username: Optional[str] = None
     xtream_password: Optional[str] = None
+    user_agent: Optional[str] = None
     enable_vod: bool = True
 
 
@@ -317,6 +318,8 @@ def _dump_config(data: AppConfig) -> str:
                 lines.append("    xtream_username: " + provider.xtream_username)
             if provider.xtream_password:
                 lines.append("    xtream_password: " + provider.xtream_password)
+            if provider.user_agent:
+                lines.append("    user_agent: " + provider.user_agent)
             if provider.last_loaded_at:
                 lines.append("    last_loaded_at: " + provider.last_loaded_at)
             if not provider.enable_vod:
@@ -368,6 +371,7 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         base_raw = entry.get("xtream_base_url")
         username_raw = entry.get("xtream_username")
         password_raw = entry.get("xtream_password")
+        user_agent_raw = entry.get("user_agent")
 
         playlist: Optional[str] = None
         if isinstance(playlist_raw, str) and playlist_raw.strip():
@@ -425,6 +429,11 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
                 else:
                     last_loaded_at = candidate
         enable_vod = _parse_bool(entry.get("enable_vod"), default=True)
+        user_agent = None
+        if isinstance(user_agent_raw, str):
+            candidate = user_agent_raw.strip()
+            if candidate:
+                user_agent = candidate
         providers.append(
             ProviderConfig(
                 name=str(name),
@@ -434,6 +443,7 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
                 xtream_base_url=xtream_base,
                 xtream_username=xtream_username,
                 xtream_password=xtream_password,
+                user_agent=user_agent,
                 enable_vod=enable_vod,
             )
         )
