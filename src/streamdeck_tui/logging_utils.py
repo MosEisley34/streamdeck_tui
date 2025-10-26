@@ -15,7 +15,12 @@ if TYPE_CHECKING:  # pragma: no cover - only for typing
     from .app import StreamdeckApp
     from .log_viewer import LogViewer
 
-__all__ = ["configure_logging", "get_logger", "register_log_viewer"]
+__all__ = [
+    "configure_logging",
+    "get_logger",
+    "get_log_file_path",
+    "register_log_viewer",
+]
 
 _ENV_LEVEL = "STREAMDECK_TUI_LOG_LEVEL"
 _ENV_FILE = "STREAMDECK_TUI_LOG_FILE"
@@ -282,6 +287,16 @@ def get_logger(name: Optional[str] = None) -> logging.Logger:
     if name.startswith(base.name + "."):
         return logging.getLogger(name)
     return logging.getLogger(f"{base.name}.{name}")
+
+
+def get_log_file_path() -> Optional[Path]:
+    """Return the path to the active log file if file logging is enabled."""
+
+    configure_logging()
+    log_path: Optional[Path] = getattr(configure_logging, "_log_path", None)
+    if log_path is None:
+        return None
+    return Path(log_path)
 
 
 def register_log_viewer(viewer: Optional["LogViewer"]) -> None:
