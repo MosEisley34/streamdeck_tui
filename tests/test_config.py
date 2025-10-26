@@ -166,6 +166,15 @@ def test_build_xtream_variants_without_scheme_adds_http_fallback() -> None:
     assert any(url.startswith("http://portal.example.com/") for url in playlists)
 
 
+def test_build_xtream_variants_with_https_input_adds_http_retry() -> None:
+    variants = build_xtream_playlist_variants(
+        "https://portal.example.com", "user", "pass"
+    )
+    playlists = {playlist for playlist, *_ in variants}
+    assert any(url.startswith("https://portal.example.com/") for url in playlists)
+    assert any(url.startswith("http://portal.example.com/") for url in playlists)
+
+
 def test_save_config_persists_xtream_fields(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     playlist, api = build_xtream_urls("https://portal.example.com", "user", "pass")
