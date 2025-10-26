@@ -9,7 +9,7 @@ from typing import Iterable
 from . import __version__
 from .app import StreamdeckApp
 from .config import CONFIG_PATH, load_config
-from .logging_utils import configure_logging, get_logger
+from .logging_utils import configure_logging, get_log_file_path, get_logger
 from .player import PREFERRED_PLAYER_DEFAULT
 from .themes import CUSTOM_THEMES
 
@@ -67,7 +67,40 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="List available themes and exit.",
     )
+    parser.add_argument(
+        "--provider-logs",
+        metavar="NAME",
+        default=None,
+        help="Print log entries mentioning the given provider name and exit.",
+    )
     return parser.parse_args(argv)
+
+
+def _print_provider_logs(provider_name: str) -> None:
+    """Write log entries that reference *provider_name* to stdout."""
+
+    log_path = get_log_file_path()
+    if log_path is None:
+        print("File logging is not enabled; set --log-file or STREAMDECK_TUI_LOG_FILE.")
+        return
+
+    if not log_path.exists():
+        print(f"No log file found at {log_path}")
+        return
+
+    provider_token = provider_name.lower()
+    matches = 0
+
+    print(f"Log file: {log_path}")
+    with log_path.open("r", encoding="utf8", errors="replace") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\n")
+            if provider_token in line.lower():
+                print(line)
+                matches += 1
+
+    if matches == 0:
+        print(f"No log entries mentioning '{provider_name}' were found.")
 
 
 def main(argv: Iterable[str] | None = None) -> None:
@@ -80,6 +113,9 @@ def main(argv: Iterable[str] | None = None) -> None:
         level=args.log_level,
         log_file=str(args.log_file) if args.log_file is not None else None,
     )
+    if args.provider_logs:
+        _print_provider_logs(args.provider_logs)
+        return
     warn_if_legacy_stylesheet()
     log.info("CLI invoked with config=%s", args.config)
     config = load_config(args.config)
