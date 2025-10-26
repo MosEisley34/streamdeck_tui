@@ -515,6 +515,45 @@ def test_provider_label_includes_channels_and_status(monkeypatch) -> None:
     assert loading_label.index("loading 50%") < loading_label.index("2 channels")
 
 
+def test_provider_label_shows_channel_delta(monkeypatch) -> None:
+    """Provider labels should include signed channel deltas after reloads."""
+
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel
+
+    provider = ProviderConfig(name="Demo", playlist_url="http://example.com")
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
+
+    monkeypatch.setattr(StreamdeckApp, "_refresh_provider_list", lambda self: None, raising=False)
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "_update_provider_progress_widget",
+        lambda self, state=None: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        StreamdeckApp,
+        "_update_connection_usage_widget",
+        lambda self, state=None: None,
+        raising=False,
+    )
+    monkeypatch.setattr("streamdeck_tui.app.save_channels", lambda *args, **kwargs: None, raising=False)
+    monkeypatch.setattr("streamdeck_tui.app.save_config", lambda config, path: None, raising=False)
+
+    state = app._states[0]
+    app._active_index = None
+
+    initial = [Channel(name="Demo 1", url="http://example.com/1")]
+    updated = initial + [Channel(name="Demo 2", url="http://example.com/2")]
+
+    app._handle_channels_loaded(state, initial)
+    app._handle_channels_loaded(state, updated)
+
+    label = app._provider_label(state)
+    assert "2 channels (+1)" in label
+
+
 def test_vod_channels_filtered_when_disabled(monkeypatch) -> None:
     """Providers with VOD disabled should drop movie and series entries."""
 
