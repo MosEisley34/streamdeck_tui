@@ -1125,6 +1125,8 @@ class ProviderForm(Static):
         yield Input(placeholder="Username", id="provider-username")
         yield Label("Xtream Codes password")
         yield Input(placeholder="Password", id="provider-password")
+        yield Label("Custom User-Agent (optional)")
+        yield Input(placeholder="Mozilla/5.0 ...", id="provider-user-agent")
         yield Checkbox(
             "Include video on demand (VOD)",
             id="provider-vod",
@@ -1146,6 +1148,7 @@ class ProviderForm(Static):
         self.query_one("#provider-server", Input).value = base or ""
         self.query_one("#provider-username", Input).value = username or ""
         self.query_one("#provider-password", Input).value = password or ""
+        self.query_one("#provider-user-agent", Input).value = provider.user_agent or ""
         self.query_one("#provider-vod", Checkbox).value = provider.enable_vod
 
     def read(self) -> ProviderConfig:
@@ -1158,6 +1161,8 @@ class ProviderForm(Static):
         xtream_password: Optional[str] = password or None
         if base and username and password:
             playlist_url, api_url = build_xtream_urls(base, username, password)
+        user_agent_value = self.query_one("#provider-user-agent", Input).value.strip()
+        user_agent = user_agent_value or None
         return ProviderConfig(
             name=name,
             playlist_url=playlist_url,
@@ -1165,6 +1170,7 @@ class ProviderForm(Static):
             xtream_base_url=xtream_base,
             xtream_username=xtream_username,
             xtream_password=xtream_password,
+            user_agent=user_agent,
             enable_vod=self.query_one("#provider-vod", Checkbox).value,
         )
 
@@ -1173,6 +1179,7 @@ class ProviderForm(Static):
         self.query_one("#provider-server", Input).value = ""
         self.query_one("#provider-username", Input).value = ""
         self.query_one("#provider-password", Input).value = ""
+        self.query_one("#provider-user-agent", Input).value = ""
         self.query_one("#provider-vod", Checkbox).value = True
 
     def focus_name(self) -> None:
@@ -1891,7 +1898,9 @@ class StreamdeckApp(App[None]):
             if not api_url:
                 return
             try:
-                status = await fetch_connection_status(api_url)
+                status = await fetch_connection_status(
+                    api_url, user_agent=state.config.user_agent
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # pragma: no cover - network failures depend on environment
@@ -3430,6 +3439,7 @@ class StreamdeckApp(App[None]):
                         load_playlist,
                         candidate.playlist_url,
                         progress=progress_callback,
+                        user_agent=state.config.user_agent,
                     )
                 except Exception as exc:  # pragma: no cover - network failures depend on environment
                     last_error = exc
@@ -3480,7 +3490,9 @@ class StreamdeckApp(App[None]):
             api_url = state.config.api_url
             if api_url:
                 try:
-                    status = await fetch_connection_status(api_url)
+                    status = await fetch_connection_status(
+                        api_url, user_agent=state.config.user_agent
+                    )
                 except Exception as exc:  # pragma: no cover - network failures depend on environment
                     log.exception("Error fetching status for %s", state.config.name)
                     self._call_on_app_thread(self._handle_status_error, state, str(exc))
