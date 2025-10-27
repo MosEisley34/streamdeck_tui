@@ -1542,6 +1542,9 @@ class StreamdeckApp(App[None]):
         self._channel_window_start: int = 0
         self._probing_player: bool = False
         self._provider_colors: dict[str, str] = {}
+        self._provider_list_order: list[str] = []
+        self._provider_list_labels: dict[str, Label] = {}
+        self._provider_label_cache: dict[str, str] = {}
         self._preferred_player: Optional[str] = (
             preferred_player if preferred_player is not None else PREFERRED_PLAYER_DEFAULT
         )
@@ -2704,25 +2707,60 @@ class StreamdeckApp(App[None]):
         log.debug("Refreshing provider list UI")
         list_view = self.query_one("#provider-list", ListView)
         previous_index = list_view.index
-        with _batch_update(list_view):
-            list_view.clear()
-            for state in self._states:
-                list_view.append(
-                    ListItem(Label(self._provider_label(state), markup=True))
-                )
-            if self._states:
-                if self._active_index is not None:
-                    list_view.index = max(
-                        0, min(self._active_index, len(self._states) - 1)
-                    )
-                elif previous_index is not None:
-                    list_view.index = max(
-                        0, min(previous_index, len(self._states) - 1)
-                    )
+
+        def rebuild_list() -> None:
+            """Rebuild the provider list from scratch."""
+
+            provider_names = [state.config.name for state in self._states]
+            self._provider_list_labels.clear()
+            self._provider_label_cache.clear()
+            with _batch_update(list_view):
+                list_view.clear()
+                for state in self._states:
+                    markup = self._provider_label(state)
+                    label = Label("", markup=True)
+                    label.update(markup)
+                    list_item = ListItem(label)
+                    list_view.append(list_item)
+                    self._provider_list_labels[state.config.name] = label
+                    self._provider_label_cache[state.config.name] = markup
+                if self._states:
+                    if self._active_index is not None:
+                        list_view.index = max(
+                            0, min(self._active_index, len(self._states) - 1)
+                        )
+                    elif previous_index is not None:
+                        list_view.index = max(
+                            0, min(previous_index, len(self._states) - 1)
+                        )
+                    else:
+                        list_view.index = 0
                 else:
-                    list_view.index = 0
-            else:
-                list_view.index = None
+                    list_view.index = None
+            self._provider_list_order = provider_names
+
+        children = getattr(list_view, "children", None)
+        provider_names = [state.config.name for state in self._states]
+        if (
+            children is None
+            or len(children) != len(self._states)
+            or provider_names != self._provider_list_order
+        ):
+            rebuild_list()
+        else:
+            needs_rebuild = False
+            for state in self._states:
+                markup = self._provider_label(state)
+                label = self._provider_list_labels.get(state.config.name)
+                if label is None:
+                    needs_rebuild = True
+                    break
+                cached = self._provider_label_cache.get(state.config.name)
+                if cached != markup:
+                    label.update(markup)
+                    self._provider_label_cache[state.config.name] = markup
+            if needs_rebuild:
+                rebuild_list()
         self._update_provider_progress_widget()
         self._update_connection_usage_widget()
         self._update_connection_strip()
