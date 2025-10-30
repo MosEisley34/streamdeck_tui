@@ -966,6 +966,90 @@ def test_fetch_provider_error_on_app_thread(monkeypatch) -> None:
     assert app._worker is None
 
 
+def test_fetch_provider_xtream_api_fallback(monkeypatch) -> None:
+    """When playlist downloads fail the Xtream API fallback should populate channels."""
+
+    from streamdeck_tui import app as app_module
+    from streamdeck_tui.app import StreamdeckApp
+    from streamdeck_tui.config import AppConfig, ProviderConfig
+    from streamdeck_tui.playlist import Channel
+    from streamdeck_tui.providers import ConnectionStatus
+
+    provider = ProviderConfig(
+        name="Demo",
+        playlist_url="http://invalid.example/get.php?username=user&password=pass",
+        xtream_base_url="http://portal.example",
+        xtream_username="user",
+        xtream_password="pass",
+        xtream_playlist_type="m3u_plus",
+        xtream_output="ts",
+    )
+    app = StreamdeckApp(AppConfig(providers=[provider]), preferred_player="mpv")
+    state = app._states[0]
+    state.loading = True
+    app._worker = object()
+
+    monkeypatch.setattr(StreamdeckApp, "_set_status", lambda self, message: None, raising=False)
+    monkeypatch.setattr(StreamdeckApp, "_refresh_provider_list", lambda self: None, raising=False)
+    monkeypatch.setattr(StreamdeckApp, "_update_provider_progress_widget", lambda self, s: None, raising=False)
+    monkeypatch.setattr(StreamdeckApp, "_update_connection_usage_widget", lambda self, s: None, raising=False)
+
+    dummy_search = type("DummySearch", (), {"value": ""})()
+
+    def fake_query_one(self, selector: str, expected_type=None):  # pragma: no cover - trivial stub
+        if selector == "#search":
+            return dummy_search
+        raise AssertionError(f"Unexpected selector: {selector}")
+
+    monkeypatch.setattr(StreamdeckApp, "query_one", fake_query_one, raising=False)
+
+    def failing_loader(_: str, **__: object) -> None:
+        raise RuntimeError("playlist failed")
+
+    monkeypatch.setattr(app_module, "load_playlist", failing_loader, raising=False)
+
+    fallback_channels = [
+        Channel(name="Fallback", url="http://portal.example/live/user/pass/1.ts"),
+    ]
+    called: dict[str, bool] = {"fallback": False}
+
+    def fake_xtream_loader(*args, **kwargs):  # pragma: no cover - shim
+        called["fallback"] = True
+        return fallback_channels
+
+    monkeypatch.setattr(
+        app_module,
+        "load_xtream_api_channels",
+        fake_xtream_loader,
+        raising=False,
+    )
+
+    async def fake_status(_: str, **__: object) -> ConnectionStatus:
+        return ConnectionStatus(message="OK")
+
+    monkeypatch.setattr(app_module, "fetch_connection_status", fake_status, raising=False)
+
+    captured_channels: list[Channel] = []
+
+    def capture_loaded(self, state_obj, channels_obj):
+        captured_channels.extend(channels_obj)
+        state_obj.channels = channels_obj
+        state_obj.loading = False
+        state_obj.last_loaded_at = datetime.now(tz=timezone.utc)
+
+    monkeypatch.setattr(StreamdeckApp, "_handle_channels_loaded", capture_loaded, raising=False)
+
+    asyncio.run(app._fetch_provider(state))
+
+    assert called["fallback"] is True
+    assert state.loading is False
+    assert state.last_error is None
+    assert captured_channels == fallback_channels
+    assert state.config.playlist_url.startswith("http://portal.example/get.php?")
+    assert state.config.api_url.startswith("http://portal.example/player_api.php?")
+    assert app._worker is None
+
+
 def test_toggle_favorite_updates_config(monkeypatch) -> None:
     """Toggling favorites should add and remove entries from the configuration."""
 

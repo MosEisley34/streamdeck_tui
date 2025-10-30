@@ -1,4 +1,5 @@
 import logging
+from email.message import Message
 from pathlib import Path
 from typing import Sequence
 
@@ -9,9 +10,10 @@ from streamdeck_tui.playlist import (
     PlaylistError,
     build_search_index,
     filter_channels,
+    load_playlist,
+    load_xtream_api_channels,
     normalize_tokens,
     parse_playlist,
-    load_playlist,
 )
 
 
@@ -185,3 +187,73 @@ http://stream.example/1
     )
     assert [channel.name for channel in channels] == ["Example"]
     assert captured["user_agent"] == "Streamdeck/3.0"
+
+
+def test_load_xtream_api_channels(monkeypatch) -> None:
+    base = "https://portal.example"
+    username = "user"
+    password = "pass"
+
+    categories_payload = [
+        {"category_id": "1", "category_name": "News"},
+        {"category_id": "2", "category_name": "Sports"},
+    ]
+    streams_payload = [
+        {
+            "stream_id": 101,
+            "name": "Channel One",
+            "category_id": "1",
+            "stream_icon": "http://logo1",
+            "epg_channel_id": "chan1",
+        },
+        {
+            "stream_id": 202,
+            "name": "Channel Two",
+            "category_name": "Sports",
+        },
+    ]
+
+    responses = {
+        f"{base}/player_api.php?username={username}&password={password}&action=get_live_categories": categories_payload,
+        f"{base}/player_api.php?username={username}&password={password}&action=get_live_streams": streams_payload,
+    }
+
+    class DummyResponse:
+        def __init__(self, payload: object) -> None:
+            self._payload = payload
+            self.headers = Message()
+            self.headers.add_header("Content-Type", "application/json; charset=utf-8")
+
+        def __enter__(self) -> "DummyResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            import json
+
+            return json.dumps(self._payload).encode("utf-8")
+
+    def fake_urlopen(req, timeout: float = 0.0):  # pragma: no cover - shim
+        url = req.full_url if hasattr(req, "full_url") else req
+        if url not in responses:
+            raise AssertionError(f"Unexpected URL requested: {url}")
+        return DummyResponse(responses[url])
+
+    monkeypatch.setattr("streamdeck_tui.playlist.request.urlopen", fake_urlopen)
+
+    channels = load_xtream_api_channels(
+        base,
+        username,
+        password,
+        output="hls",
+    )
+
+    assert [channel.name for channel in channels] == ["Channel One", "Channel Two"]
+    first, second = channels
+    assert first.group == "News"
+    assert first.logo == "http://logo1"
+    assert first.raw_attributes["tvg-id"] == "chan1"
+    assert first.url.endswith("/live/user/pass/101.m3u8")
+    assert second.group == "Sports"
