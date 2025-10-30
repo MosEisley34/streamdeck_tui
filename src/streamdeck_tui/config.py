@@ -25,6 +25,8 @@ class ProviderConfig:
     xtream_base_url: Optional[str] = None
     xtream_username: Optional[str] = None
     xtream_password: Optional[str] = None
+    xtream_playlist_type: Optional[str] = None
+    xtream_output: Optional[str] = None
     user_agent: Optional[str] = None
     enable_vod: bool = True
 
@@ -124,21 +126,43 @@ def _normalize_xtream_base_url(base_url: str) -> str:
     return normalized.rstrip("/")
 
 
-def build_xtream_urls(base_url: str, username: str, password: str) -> Tuple[str, str]:
+def _normalize_xtream_option(value: Optional[str], *, default: str) -> str:
+    candidate = (value or "").strip()
+    if not candidate:
+        return default
+    return candidate.lower()
+
+
+def build_xtream_urls(
+    base_url: str,
+    username: str,
+    password: str,
+    *,
+    playlist_type: Optional[str] = None,
+    output: Optional[str] = None,
+) -> Tuple[str, str]:
     """Return Xtream Codes playlist and API URLs for the provided credentials."""
 
     normalized = _normalize_xtream_base_url(base_url)
     user = quote_plus(username)
     passwd = quote_plus(password)
+    playlist_type_value = _normalize_xtream_option(playlist_type, default="m3u_plus")
+    output_value = _normalize_xtream_option(output, default="ts")
     playlist = (
-        f"{normalized}/get.php?username={user}&password={passwd}&type=m3u_plus&output=ts"
+        f"{normalized}/get.php?username={user}&password={passwd}"
+        f"&type={quote_plus(playlist_type_value)}&output={quote_plus(output_value)}"
     )
     api = f"{normalized}/player_api.php?username={user}&password={passwd}"
     return playlist, api
 
 
 def build_xtream_playlist_variants(
-    base_url: str, username: str, password: str
+    base_url: str,
+    username: str,
+    password: str,
+    *,
+    playlist_type: Optional[str] = None,
+    output: Optional[str] = None,
 ) -> list[tuple[str, str, str, str, str, str]]:
     """Return alternate Xtream playlist/API URL combinations for recovery attempts.
 
@@ -172,30 +196,55 @@ def build_xtream_playlist_variants(
         if http_variant:
             _append_candidate(http_variant, base_candidates)
 
-    playlist_params = [
+    primary_type = _normalize_xtream_option(playlist_type, default="m3u_plus")
+    primary_output = _normalize_xtream_option(output, default="ts")
+
+    playlist_params: list[tuple[str, str]] = []
+    seen_params: set[tuple[str, str]] = set()
+
+    def _append_params(type_value: str, output_value: str) -> None:
+        key = (type_value, output_value)
+        if key not in seen_params:
+            seen_params.add(key)
+            playlist_params.append(key)
+
+    _append_params(primary_type, primary_output)
+    for fallback_type, fallback_output in (
         ("m3u_plus", "ts"),
-        ("m3u_plus", "mpegts"),
         ("m3u", "ts"),
+        ("m3u_plus", "mpegts"),
         ("m3u", "mpegts"),
-    ]
+        ("m3u_plus", "hls"),
+        ("m3u", "hls"),
+    ):
+        _append_params(fallback_type, fallback_output)
 
     variants: list[tuple[str, str, str, str, str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for candidate_base in base_candidates:
-        stripped_base = candidate_base.rstrip("/")
-        parsed_candidate = urlparse(stripped_base)
-        scheme = parsed_candidate.scheme or parsed.scheme or "http"
-        for playlist_type, output in playlist_params:
+    for playlist_type_value, output_value in playlist_params:
+        for candidate_base in base_candidates:
+            stripped_base = candidate_base.rstrip("/")
+            parsed_candidate = urlparse(stripped_base)
+            scheme = parsed_candidate.scheme or parsed.scheme or "http"
             playlist = (
                 f"{stripped_base}/get.php?username={user}&password={passwd}"
-                f"&type={playlist_type}&output={output}"
+                f"&type={playlist_type_value}&output={output_value}"
             )
             api = f"{stripped_base}/player_api.php?username={user}&password={passwd}"
             signature = (playlist, api)
             if signature in seen:
                 continue
             seen.add(signature)
-            variants.append((playlist, api, stripped_base, playlist_type, output, scheme))
+            variants.append(
+                (
+                    playlist,
+                    api,
+                    stripped_base,
+                    playlist_type_value,
+                    output_value,
+                    scheme,
+                )
+            )
     return variants
 
 
@@ -320,6 +369,10 @@ def _dump_config(data: AppConfig) -> str:
                 lines.append("    xtream_username: " + provider.xtream_username)
             if provider.xtream_password:
                 lines.append("    xtream_password: " + provider.xtream_password)
+            if provider.xtream_playlist_type:
+                lines.append("    xtream_playlist_type: " + provider.xtream_playlist_type)
+            if provider.xtream_output:
+                lines.append("    xtream_output: " + provider.xtream_output)
             if provider.user_agent:
                 lines.append("    user_agent: " + provider.user_agent)
             if provider.last_loaded_at:
@@ -373,6 +426,8 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         base_raw = entry.get("xtream_base_url")
         username_raw = entry.get("xtream_username")
         password_raw = entry.get("xtream_password")
+        playlist_type_raw = entry.get("xtream_playlist_type")
+        output_raw = entry.get("xtream_output")
         user_agent_raw = entry.get("user_agent")
 
         playlist: Optional[str] = None
@@ -388,6 +443,16 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         xtream_base = base_raw.strip() if isinstance(base_raw, str) else None
         xtream_username = username_raw.strip() if isinstance(username_raw, str) else None
         xtream_password = password_raw.strip() if isinstance(password_raw, str) else None
+        xtream_playlist_type = (
+            playlist_type_raw.strip().lower()
+            if isinstance(playlist_type_raw, str) and playlist_type_raw.strip()
+            else None
+        )
+        xtream_output = (
+            output_raw.strip().lower()
+            if isinstance(output_raw, str) and output_raw.strip()
+            else None
+        )
         has_xtream_credentials = all(
             value for value in (xtream_base, xtream_username, xtream_password)
         )
@@ -397,6 +462,8 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
                     xtream_base or "",
                     xtream_username or "",
                     xtream_password or "",
+                    playlist_type=xtream_playlist_type,
+                    output=xtream_output,
                 )
             except ValueError:
                 log.warning("Invalid Xtream configuration for provider %s", name or "<unknown>")
@@ -409,6 +476,8 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
             xtream_base = None
             xtream_username = None
             xtream_password = None
+            xtream_playlist_type = None
+            xtream_output = None
 
         if not name or not playlist:
             log.warning(
@@ -445,6 +514,8 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
                 xtream_base_url=xtream_base,
                 xtream_username=xtream_username,
                 xtream_password=xtream_password,
+                xtream_playlist_type=xtream_playlist_type,
+                xtream_output=xtream_output,
                 user_agent=user_agent,
                 enable_vod=enable_vod,
             )

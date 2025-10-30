@@ -1126,6 +1126,10 @@ class ProviderForm(Static):
         yield Input(placeholder="Username", id="provider-username")
         yield Label("Xtream Codes password")
         yield Input(placeholder="Password", id="provider-password")
+        yield Label("Xtream playlist type (optional)")
+        yield Input(placeholder="m3u_plus", id="provider-playlist-type")
+        yield Label("Xtream output format (optional)")
+        yield Input(placeholder="ts", id="provider-output")
         yield Label("Custom User-Agent (optional)")
         yield Input(placeholder="Mozilla/5.0 ...", id="provider-user-agent")
         yield Checkbox(
@@ -1149,19 +1153,38 @@ class ProviderForm(Static):
         self.query_one("#provider-server", Input).value = base or ""
         self.query_one("#provider-username", Input).value = username or ""
         self.query_one("#provider-password", Input).value = password or ""
+        playlist_type = provider.xtream_playlist_type
+        output_format = provider.xtream_output
+        if provider.playlist_url:
+            parsed = urlparse(provider.playlist_url)
+            params = parse_qs(parsed.query)
+            playlist_type = playlist_type or params.get("type", [None])[0]
+            output_format = output_format or params.get("output", [None])[0]
+        self.query_one("#provider-playlist-type", Input).value = playlist_type or ""
+        self.query_one("#provider-output", Input).value = output_format or ""
         self.query_one("#provider-user-agent", Input).value = provider.user_agent or ""
         self.query_one("#provider-vod", Checkbox).value = provider.enable_vod
 
     def read(self) -> ProviderConfig:
         name = self.query_one("#provider-name", Input).value.strip()
         base, username, password = self.xtream_credentials()
+        playlist_type_input = self.query_one("#provider-playlist-type", Input).value.strip()
+        playlist_type = playlist_type_input.lower() or None
+        output_input = self.query_one("#provider-output", Input).value.strip()
+        output_format = output_input.lower() or None
         playlist_url = ""
         api_url: Optional[str] = None
         xtream_base: Optional[str] = base or None
         xtream_username: Optional[str] = username or None
         xtream_password: Optional[str] = password or None
         if base and username and password:
-            playlist_url, api_url = build_xtream_urls(base, username, password)
+            playlist_url, api_url = build_xtream_urls(
+                base,
+                username,
+                password,
+                playlist_type=playlist_type,
+                output=output_format,
+            )
         user_agent_value = self.query_one("#provider-user-agent", Input).value.strip()
         user_agent = user_agent_value or None
         return ProviderConfig(
@@ -1171,6 +1194,8 @@ class ProviderForm(Static):
             xtream_base_url=xtream_base,
             xtream_username=xtream_username,
             xtream_password=xtream_password,
+            xtream_playlist_type=playlist_type,
+            xtream_output=output_format,
             user_agent=user_agent,
             enable_vod=self.query_one("#provider-vod", Checkbox).value,
         )
@@ -1180,6 +1205,8 @@ class ProviderForm(Static):
         self.query_one("#provider-server", Input).value = ""
         self.query_one("#provider-username", Input).value = ""
         self.query_one("#provider-password", Input).value = ""
+        self.query_one("#provider-playlist-type", Input).value = ""
+        self.query_one("#provider-output", Input).value = ""
         self.query_one("#provider-user-agent", Input).value = ""
         self.query_one("#provider-vod", Checkbox).value = True
 
@@ -3267,7 +3294,13 @@ class StreamdeckApp(App[None]):
         password = state.config.xtream_password
         if base and username and password:
             try:
-                variants = build_xtream_playlist_variants(base, username, password)
+                variants = build_xtream_playlist_variants(
+                    base,
+                    username,
+                    password,
+                    playlist_type=state.config.xtream_playlist_type,
+                    output=state.config.xtream_output,
+                )
             except ValueError:
                 log.warning(
                     "Invalid Xtream configuration for provider %s; skipping fallbacks",
@@ -3516,6 +3549,10 @@ class StreamdeckApp(App[None]):
                     state.config.api_url = candidate.api_url
                 if candidate.base_url is not None:
                     state.config.xtream_base_url = candidate.base_url
+                if candidate.type_param:
+                    state.config.xtream_playlist_type = candidate.type_param
+                if candidate.output_param:
+                    state.config.xtream_output = candidate.output_param
                 if candidate.description:
                     self._set_status(
                         f"{candidate.description} for {state.config.name} succeeded. "
