@@ -1,6 +1,7 @@
 """Utilities for parsing IPTV playlists."""
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import unicodedata
@@ -9,8 +10,11 @@ from pathlib import Path
 from typing import Callable, Iterable, List, Mapping, Optional, Sequence
 from typing import Literal, overload
 from urllib import request
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 
 from .logging_utils import get_logger
+from .config import build_xtream_urls, _normalize_xtream_base_url
 
 log = get_logger(__name__)
 
@@ -418,12 +422,124 @@ def filter_channels(
     return index_results if return_indices else channel_results
 
 
+def _xtream_request(url: str, *, user_agent: Optional[str]) -> object:
+    """Return JSON decoded payload from an Xtream Codes endpoint."""
+
+    headers = {"Accept": "application/json"}
+    if user_agent:
+        headers["User-Agent"] = user_agent
+    req = request.Request(url, headers=headers)
+    with request.urlopen(req) as response:
+        payload = response.read()
+    try:
+        return json.loads(payload.decode("utf-8"))
+    except UnicodeDecodeError:
+        return json.loads(payload.decode("latin-1"))
+
+
+def _xtream_stream_extension(output: Optional[str]) -> str:
+    normalized = (output or "ts").strip().lower()
+    if normalized in {"ts", "mpegts"}:
+        return "ts"
+    if normalized in {"hls", "m3u8"}:
+        return "m3u8"
+    return normalized or "ts"
+
+
+def load_xtream_api_channels(
+    base_url: str,
+    username: str,
+    password: str,
+    *,
+    playlist_type: Optional[str] = None,
+    output: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> List[Channel]:
+    """Return live channels fetched through the Xtream JSON API."""
+
+    normalized_base = _normalize_xtream_base_url(base_url)
+    _, api_url = build_xtream_urls(
+        normalized_base,
+        username,
+        password,
+        playlist_type=playlist_type,
+        output=output,
+    )
+    extension = _xtream_stream_extension(output)
+    encoded_username = quote(username, safe="")
+    encoded_password = quote(password, safe="")
+
+    categories: dict[str, str] = {}
+    categories_url = f"{api_url}&action=get_live_categories"
+    try:
+        category_payload = _xtream_request(categories_url, user_agent=user_agent)
+    except (HTTPError, URLError, json.JSONDecodeError):
+        log.debug("Failed to load Xtream categories from %s", categories_url)
+    else:
+        if isinstance(category_payload, list):
+            for entry in category_payload:
+                if not isinstance(entry, dict):
+                    continue
+                category_id = entry.get("category_id")
+                name = entry.get("category_name") or entry.get("category")
+                if category_id is None or not name:
+                    continue
+                categories[str(category_id)] = str(name)
+
+    streams_url = f"{api_url}&action=get_live_streams"
+    streams_payload = _xtream_request(streams_url, user_agent=user_agent)
+    if not isinstance(streams_payload, list):
+        raise PlaylistError("Unexpected Xtream response while loading channels")
+
+    channels: List[Channel] = []
+    for entry in streams_payload:
+        if not isinstance(entry, dict):
+            continue
+        stream_id = entry.get("stream_id")
+        name = entry.get("name")
+        if stream_id is None or not name:
+            continue
+        category_name = entry.get("category_name")
+        if not category_name and entry.get("category_id") is not None:
+            category_name = categories.get(str(entry["category_id"]))
+        logo = entry.get("stream_icon") or entry.get("stream_logo")
+        epg_id = entry.get("epg_channel_id") or entry.get("epg_id")
+        attributes: dict[str, str] = {}
+        if category_name:
+            attributes["group-title"] = str(category_name)
+        if logo:
+            attributes["tvg-logo"] = str(logo)
+        if epg_id:
+            attributes["tvg-id"] = str(epg_id)
+        attributes["xtream-stream-id"] = str(stream_id)
+        stream_url = (
+            f"{normalized_base}/live/{encoded_username}/{encoded_password}/{stream_id}.{extension}"
+        )
+        channels.append(
+            Channel(
+                name=str(name),
+                url=stream_url,
+                group=str(category_name) if category_name else None,
+                logo=str(logo) if logo else None,
+                raw_attributes=attributes,
+            )
+        )
+
+    log.info(
+        "Loaded %d channel(s) via Xtream API from %s",
+        len(channels),
+        normalized_base,
+    )
+    return channels
+
+
 __all__ = [
     "Channel",
     "ChannelSearchIndex",
     "PlaylistError",
     "parse_playlist",
     "load_playlist",
+    "load_xtream_api_channels",
     "normalize_tokens",
     "build_search_index",
     "filter_channels",

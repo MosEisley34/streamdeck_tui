@@ -85,6 +85,7 @@ from .playlist import (
     build_search_index,
     filter_channels,
     load_playlist,
+    load_xtream_api_channels,
 )
 from .player import (
     PREFERRED_PLAYER_DEFAULT,
@@ -2914,11 +2915,12 @@ class StreamdeckApp(App[None]):
                     message = "Loading channels…"
                 else:
                     message = "Channels not loaded"
-                list_view = self.query_one("#channel-list", ListView)
-                with _batch_update(list_view):
-                    list_view.clear()
-                    list_view.append(ListItem(Label(message)))
-                    list_view.index = 0
+                list_view = self._query_optional_widget("#channel-list", ListView)
+                if list_view is not None:
+                    with _batch_update(list_view):
+                        list_view.clear()
+                        list_view.append(ListItem(Label(message)))
+                        list_view.index = 0
                 self._clear_active_channel_info()
                 self._set_status(message)
             else:
@@ -2956,11 +2958,12 @@ class StreamdeckApp(App[None]):
                 )
                 return
             if not filtered:
-                list_view = self.query_one("#channel-list", ListView)
-                with _batch_update(list_view):
-                    list_view.clear()
-                    list_view.append(ListItem(Label("No channels found")))
-                    list_view.index = 0
+                list_view = self._query_optional_widget("#channel-list", ListView)
+                if list_view is not None:
+                    with _batch_update(list_view):
+                        list_view.clear()
+                        list_view.append(ListItem(Label("No channels found")))
+                        list_view.index = 0
                 self._clear_active_channel_info()
             else:
                 self._start_channel_render(filtered)
@@ -3531,15 +3534,70 @@ class StreamdeckApp(App[None]):
                     break
 
             if successful is None:
-                message = str(last_error) if last_error else "Unknown error"
-                log.error(
-                    "Failed to load playlist for %s after %d attempt(s)",
-                    state.config.name,
-                    len(candidates),
-                    exc_info=last_error,
-                )
-                self._call_on_app_thread(self._handle_provider_error, state, message)
-                return
+                base = state.config.xtream_base_url
+                username = state.config.xtream_username
+                password = state.config.xtream_password
+                playlist_type = state.config.xtream_playlist_type
+                output_format = state.config.xtream_output
+                if base and username and password:
+                    log.info(
+                        "Attempting Xtream API fallback for %s", state.config.name
+                    )
+                    self._call_on_app_thread(
+                        self._set_status,
+                        f"Playlist attempts failed for {state.config.name}; "
+                        "trying Xtream API…",
+                    )
+                    try:
+                        channels = await asyncio.to_thread(
+                            load_xtream_api_channels,
+                            base,
+                            username,
+                            password,
+                            playlist_type=playlist_type,
+                            output=output_format,
+                            user_agent=state.config.user_agent,
+                        )
+                    except Exception as exc:  # pragma: no cover - network failures depend on env
+                        log.warning(
+                            "Xtream API fallback failed for %s: %s",
+                            state.config.name,
+                            exc,
+                        )
+                    else:
+                        playlist_value = playlist_type or "m3u_plus"
+                        output_value = output_format or "ts"
+                        playlist_url, api_url = build_xtream_urls(
+                            base,
+                            username,
+                            password,
+                            playlist_type=playlist_value,
+                            output=output_value,
+                        )
+                        base_url = playlist_url.rsplit("/get.php", 1)[0]
+                        scheme = urlparse(playlist_url).scheme
+                        successful = (
+                            _PlaylistCandidate(
+                                playlist_url=playlist_url,
+                                api_url=api_url,
+                                base_url=base_url,
+                                description="Loaded channels via Xtream API",
+                                type_param=playlist_value,
+                                output_param=output_value,
+                                scheme=scheme,
+                            ),
+                            channels,
+                        )
+                if successful is None:
+                    message = str(last_error) if last_error else "Unknown error"
+                    log.error(
+                        "Failed to load playlist for %s after %d attempt(s)",
+                        state.config.name,
+                        len(candidates),
+                        exc_info=last_error,
+                    )
+                    self._call_on_app_thread(self._handle_provider_error, state, message)
+                    return
 
             candidate, channels = successful
 
