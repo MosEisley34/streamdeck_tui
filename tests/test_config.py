@@ -140,6 +140,8 @@ providers:
     assert provider.xtream_base_url == "https://portal.example.com:8080/sub"
     assert provider.xtream_username == "demo user"
     assert provider.xtream_password == "secret pass"
+    assert provider.xtream_playlist_type is None
+    assert provider.xtream_output is None
 
 
 def test_build_xtream_playlist_variants_includes_scheme_and_formats() -> None:
@@ -151,6 +153,31 @@ def test_build_xtream_playlist_variants_includes_scheme_and_formats() -> None:
     assert any(url.startswith("https://") for url in playlists)
     assert any("type=m3u" in url for url in playlists)
     assert any("output=mpegts" in url for url in playlists)
+    assert any("output=hls" in url for url in playlists)
+
+
+def test_build_xtream_variants_respect_custom_primary_pair() -> None:
+    variants = build_xtream_playlist_variants(
+        "https://portal.example.com",
+        "user",
+        "pass",
+        playlist_type="m3u",
+        output="hls",
+    )
+    first_playlist, *_ = variants[0]
+    assert "type=m3u&output=hls" in first_playlist
+
+
+def test_build_xtream_urls_accepts_custom_type_and_output() -> None:
+    playlist, api = build_xtream_urls(
+        "https://portal.example.com",
+        "user",
+        "pass",
+        playlist_type="M3U",
+        output="HLS",
+    )
+    assert playlist.endswith("type=m3u&output=hls")
+    assert api.endswith("player_api.php?username=user&password=pass")
 
 
 def test_build_xtream_urls_defaults_to_https_when_scheme_missing() -> None:
@@ -177,7 +204,13 @@ def test_build_xtream_variants_with_https_input_adds_http_retry() -> None:
 
 def test_save_config_persists_xtream_fields(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
-    playlist, api = build_xtream_urls("https://portal.example.com", "user", "pass")
+    playlist, api = build_xtream_urls(
+        "https://portal.example.com",
+        "user",
+        "pass",
+        playlist_type="m3u",
+        output="hls",
+    )
     config = AppConfig(
         providers=[
             ProviderConfig(
@@ -187,6 +220,8 @@ def test_save_config_persists_xtream_fields(tmp_path: Path) -> None:
                 xtream_base_url="https://portal.example.com",
                 xtream_username="user",
                 xtream_password="pass",
+                xtream_playlist_type="m3u",
+                xtream_output="hls",
                 user_agent="Streamdeck/2.0",
                 enable_vod=False,
             )
@@ -197,12 +232,16 @@ def test_save_config_persists_xtream_fields(tmp_path: Path) -> None:
     assert "xtream_base_url: https://portal.example.com" in raw
     assert "xtream_username: user" in raw
     assert "xtream_password: pass" in raw
+    assert "xtream_playlist_type: m3u" in raw
+    assert "xtream_output: hls" in raw
     assert "user_agent: Streamdeck/2.0" in raw
     assert "enable_vod: false" in raw
     reloaded = load_config(config_path)
     assert reloaded.providers[0].xtream_base_url == "https://portal.example.com"
     assert reloaded.providers[0].xtream_username == "user"
     assert reloaded.providers[0].xtream_password == "pass"
+    assert reloaded.providers[0].xtream_playlist_type == "m3u"
+    assert reloaded.providers[0].xtream_output == "hls"
     assert not reloaded.providers[0].enable_vod
     assert reloaded.providers[0].user_agent == "Streamdeck/2.0"
 
